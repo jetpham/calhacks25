@@ -3,15 +3,28 @@ name = "calhacks"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+# Maximum optimization level
+opt-level = 3
+# Enable link-time optimization (LTO)
+lto = "thin"
+# Reduce codegen units for better optimization
+codegen-units = 1
+# Enable panic = "abort" for smaller binaries and better performance
+panic = "abort"
+# Strip debug symbols for smaller binaries
+strip = true
+# Enable overflow checks in debug, disable in release for performance
+overflow-checks = false
+
 [dependencies]
-clap = { version = "4.5.50", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-chrono = { version = "0.4", features = ["serde"] }
-rayon = "1.8"
 anyhow = "1.0.100"
-memmap2 = "0.9"
-arrow = { version = "56.2.0", features = ["csv", "ipc"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+clap = { version = "4.5.50", features = ["derive"] }
 datafusion = "50.3.0"
 datafusion-datasource-csv = "50.3.0"
-tokio = { version = "1.0", features = ["full"] }
-serde_json = "1.0"
+futures = "0.3.30"
+num_cpus = "1.16.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+tokio = { version = "1.48.0", features = ["full"] }
