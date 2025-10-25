@@ -134,3 +134,46 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Save the in-memory database to a file using DuckDB's COPY FROM DATABASE command
+pub fn save_database_to_file(con: &Connection, db_path: &PathBuf) -> Result<()> {
+    let start = Instant::now();
+    
+    // Ensure the directory exists
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    
+    // Attach the target database file
+    let attach_sql = format!("ATTACH '{}' AS target_db", db_path.display());
+    con.execute(&attach_sql, [])?;
+    
+    // Copy the in-memory database to the file
+    con.execute("COPY FROM DATABASE memory TO target_db", [])?;
+    
+    // Detach the target database
+    con.execute("DETACH target_db", [])?;
+    
+    let duration = start.elapsed();
+    println!("Database saved to {:?} in {:.3}s", db_path, duration.as_secs_f64());
+    
+    Ok(())
+}
+
+/// Load a database from a file
+pub fn load_database_from_file(db_path: &PathBuf) -> Result<Connection> {
+    let start = Instant::now();
+    
+    // Check if the database file exists
+    if !db_path.exists() {
+        return Err(anyhow::anyhow!("Database file does not exist: {:?}", db_path));
+    }
+    
+    // Open the database file
+    let con = Connection::open(db_path)?;
+    
+    let duration = start.elapsed();
+    println!("Database loaded from {:?} in {:.3}s", db_path, duration.as_secs_f64());
+    
+    Ok(con)
+}
+

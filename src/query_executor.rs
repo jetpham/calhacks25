@@ -4,53 +4,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Instant;
 use std::fs;
-use crate::data_loader::load_data;
 use crate::sql_assembler::assemble_sql;
-
-const DB_PATH: &str = ":memory:";
-
-/// Save the in-memory database to a file using DuckDB's COPY FROM DATABASE command
-pub fn save_database_to_file(con: &Connection, db_path: &PathBuf) -> Result<()> {
-    let start = Instant::now();
-    
-    // Ensure the directory exists
-    if let Some(parent) = db_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    
-    // Attach the target database file
-    let attach_sql = format!("ATTACH '{}' AS target_db", db_path.display());
-    con.execute(&attach_sql, [])?;
-    
-    // Copy the in-memory database to the file
-    con.execute("COPY FROM DATABASE memory TO target_db", [])?;
-    
-    // Detach the target database
-    con.execute("DETACH target_db", [])?;
-    
-    let duration = start.elapsed();
-    println!("Database saved to {:?} in {:.3}s", db_path, duration.as_secs_f64());
-    
-    Ok(())
-}
-
-/// Load a database from a file
-pub fn load_database_from_file(db_path: &PathBuf) -> Result<Connection> {
-    let start = Instant::now();
-    
-    // Check if the database file exists
-    if !db_path.exists() {
-        return Err(anyhow::anyhow!("Database file does not exist: {:?}", db_path));
-    }
-    
-    // Open the database file
-    let con = Connection::open(db_path)?;
-    
-    let duration = start.elapsed();
-    println!("Database loaded from {:?} in {:.3}s", db_path, duration.as_secs_f64());
-    
-    Ok(con)
-}
 
 /// Query result structure
 #[derive(Debug)]
@@ -61,28 +15,7 @@ pub struct QueryResult {
 }
 
 /// Execute queries and return results with precise timing
-pub fn run_queries(
-    queries: &[Value], 
-    data_dir: &PathBuf, 
-    save_db: &Option<PathBuf>, 
-    load_db: &Option<PathBuf>
-) -> Result<Vec<QueryResult>> {
-    let con = if let Some(db_path) = load_db {
-        // Load database from file
-        load_database_from_file(db_path)?
-    } else {
-        // Create new in-memory database and load data
-        let con = Connection::open(DB_PATH)?;
-        load_data(&con, data_dir)?;
-        
-        // Save database to file if requested
-        if let Some(save_path) = save_db {
-            save_database_to_file(&con, save_path)?;
-        }
-        
-        con
-    };
-
+pub fn run_queries(con: &Connection, queries: &[Value]) -> Result<Vec<QueryResult>> {
     let mut query_results = Vec::new();
     let benchmark_start = Instant::now();
     
