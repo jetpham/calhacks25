@@ -16,11 +16,15 @@
         };
       in
       {
-        devShells.default = with pkgs; mkShell {
+        devShells.default = with pkgs; mkShell.override {
+          stdenv = stdenvAdapters.useMoldLinker clangStdenv;
+        } {
           buildInputs = [
             (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
               extensions = [ "rust-src" ];
             }))
+            mold
+            clang
           ];
         };
       }
