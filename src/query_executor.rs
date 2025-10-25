@@ -1,36 +1,173 @@
-use datafusion::prelude::*;
 use anyhow::Result;
-use futures::future;
+use duckdb::Connection;
+use serde_json::Value;
+use std::path::PathBuf;
+use std::time::Instant;
+use std::fs;
+use crate::data_loader::load_data;
+use crate::sql_assembler::assemble_sql;
 
-/// Execute queries and return results for timing measurement
-/// Uses concurrent execution for maximum performance with DataFusion's multi-threaded engine
-pub async fn execute_queries_for_timing(
-    ctx: &SessionContext,
-    sql_queries: &[String],
-) -> Result<Vec<Vec<datafusion::arrow::array::RecordBatch>>> {
-    // Create futures for all queries to execute them concurrently
-    let futures = sql_queries.iter().enumerate().map(|(index, sql)| {
-        let ctx = ctx.clone();
-        let sql = sql.clone();
-        async move {
-            let df = ctx.sql(&sql).await?;
-            let batches = df.collect().await?;
-            Ok::<(usize, Vec<datafusion::arrow::array::RecordBatch>), anyhow::Error>((index, batches))
-        }
-    });
+const DB_PATH: &str = ":memory:";
+
+/// Save the in-memory database to a file using DuckDB's COPY FROM DATABASE command
+pub fn save_database_to_file(con: &Connection, db_path: &PathBuf) -> Result<()> {
+    let start = Instant::now();
     
-    // Execute all queries concurrently using Tokio's join_all
-    let results = future::join_all(futures).await;
+    // Ensure the directory exists
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     
-    // Convert results and sort by index to maintain original query order
-    let mut indexed_results: Vec<_> = results.into_iter().collect::<Result<Vec<_>>>()?;
-    indexed_results.sort_by_key(|(index, _)| *index);
+    // Attach the target database file
+    let attach_sql = format!("ATTACH '{}' AS target_db", db_path.display());
+    con.execute(&attach_sql, [])?;
     
-    // Extract just the batches, maintaining original order
-    let all_results = indexed_results
-        .into_iter()
-        .map(|(_, batches)| batches)
-        .collect();
+    // Copy the in-memory database to the file
+    con.execute("COPY FROM DATABASE memory TO target_db", [])?;
     
-    Ok(all_results)
+    // Detach the target database
+    con.execute("DETACH target_db", [])?;
+    
+    let duration = start.elapsed();
+    println!("Database saved to {:?} in {:.3}s", db_path, duration.as_secs_f64());
+    
+    Ok(())
 }
+
+/// Load a database from a file
+pub fn load_database_from_file(db_path: &PathBuf) -> Result<Connection> {
+    let start = Instant::now();
+    
+    // Check if the database file exists
+    if !db_path.exists() {
+        return Err(anyhow::anyhow!("Database file does not exist: {:?}", db_path));
+    }
+    
+    // Open the database file
+    let con = Connection::open(db_path)?;
+    
+    let duration = start.elapsed();
+    println!("Database loaded from {:?} in {:.3}s", db_path, duration.as_secs_f64());
+    
+    Ok(con)
+}
+
+/// Query result structure
+#[derive(Debug)]
+pub struct QueryResult {
+    pub query_num: usize,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
+/// Execute queries and return results with precise timing
+pub fn run_queries(
+    queries: &[Value], 
+    data_dir: &PathBuf, 
+    save_db: &Option<PathBuf>, 
+    load_db: &Option<PathBuf>
+) -> Result<Vec<QueryResult>> {
+    let con = if let Some(db_path) = load_db {
+        // Load database from file
+        load_database_from_file(db_path)?
+    } else {
+        // Create new in-memory database and load data
+        let con = Connection::open(DB_PATH)?;
+        load_data(&con, data_dir)?;
+        
+        // Save database to file if requested
+        if let Some(save_path) = save_db {
+            save_database_to_file(&con, save_path)?;
+        }
+        
+        con
+    };
+
+    let mut query_results = Vec::new();
+    let benchmark_start = Instant::now();
+    
+    for (i, q) in queries.iter().enumerate() {
+        let sql = assemble_sql(q);
+        
+        let query_start = Instant::now();
+        
+        // Execute query and get results using prepared statement
+        let mut stmt = con.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        
+        let mut all_rows = Vec::new();
+        let mut columns = Vec::new();
+        let mut column_count = 0;
+        
+        // Get column info from first row
+        if let Some(first_row) = rows.next()? {
+            // Determine column count
+            let mut i = 0;
+            while let Ok(_) = first_row.get::<_, String>(i) {
+                i += 1;
+            }
+            column_count = i;
+            
+            // Use generic column names for now
+            columns = (0..column_count).map(|i| format!("column{}", i)).collect();
+            
+            // Process first row
+            let mut row_data = Vec::new();
+            for i in 0..column_count {
+                let value: String = first_row.get(i)?;
+                row_data.push(value);
+            }
+            all_rows.push(row_data);
+        }
+        
+        // Collect remaining rows
+        while let Some(row) = rows.next()? {
+            let mut row_data = Vec::new();
+            for i in 0..column_count {
+                let value: String = row.get(i)?;
+                row_data.push(value);
+            }
+            all_rows.push(row_data);
+        }
+        
+        let query_duration = query_start.elapsed();
+        println!("Query {}: {:.3}s", i + 1, query_duration.as_secs_f64());
+
+        // Store result in memory
+        query_results.push(QueryResult {
+            query_num: i + 1,
+            columns,
+            rows: all_rows,
+        });
+    }
+    
+    let total_benchmark_time = benchmark_start.elapsed();
+    println!("Total benchmark time: {:.3}s", total_benchmark_time.as_secs_f64());
+
+    Ok(query_results)
+}
+
+/// Write query results to CSV files
+pub fn write_results_to_csv(results: &[QueryResult], output_dir: &PathBuf) -> Result<()> {
+    // Create output directory if it doesn't exist
+    fs::create_dir_all(output_dir)?;
+    
+    for result in results {
+        let out_path = output_dir.join(format!("q{}.csv", result.query_num));
+        let mut file = std::fs::File::create(&out_path)?;
+        let mut wtr = csv::Writer::from_writer(&mut file);
+        
+        // Write header
+        wtr.write_record(&result.columns)?;
+        
+        // Write rows
+        for row in &result.rows {
+            wtr.write_record(row)?;
+        }
+        
+        wtr.flush()?;
+    }
+    
+    Ok(())
+}
+

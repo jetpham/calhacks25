@@ -30,24 +30,20 @@
             gcc
             gcc.cc.lib
             zlib
+            # DuckDB for database operations
+            duckdb
             # Performance optimization packages
             jemalloc
             perf-tools
             valgrind
+            # Profiling tools
+            cargo-flamegraph
             # Additional development tools
             pkg-config
             openssl
             openssl.dev
           ];
-          shellHook = ''
-            export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${gcc.cc.lib}/lib"
-            # Performance optimization flags (removed problematic flags for proc-macros)
-            export RUSTFLAGS="-C target-cpu=native"
-            # Use jemalloc
-            export JEMALLOC_SYS_WITH_MALLOC_CONF="background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0"
-            # Enable jemalloc profiling if needed
-            export MALLOC_CONF="background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0"
-          '';
+          
         };
       }
     );

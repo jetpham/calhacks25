@@ -3,11 +3,13 @@ use std::path::PathBuf;
 use std::time::Instant;
 use anyhow::Result;
 
-mod sql_converter;
 mod data_loader;
-mod query_parser;
 mod query_executor;
-mod result_handler;
+mod query_parser;
+mod sql_assembler;
+
+use query_executor::{run_queries, write_results_to_csv};
+use query_parser::parse_queries_from_file;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -23,38 +25,33 @@ struct Args {
 
     #[arg(long, value_name = "DIR")]
     check_dir: Option<PathBuf>,
+
+    /// Save the preprocessed database to a file after data loading
+    #[arg(long, value_name = "FILE", conflicts_with = "load_db")]
+    save_db: Option<PathBuf>,
+
+    /// Load a preprocessed database from a file instead of loading from CSV
+    #[arg(long, value_name = "FILE", conflicts_with = "save_db")]
+    load_db: Option<PathBuf>,
 }
 
-
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let total_start = Instant::now();
     let args = Args::parse();
     
+    // Parse queries from JSON file
+    let queries = parse_queries_from_file(&args.queries)?;
     
-    // Create optimized DataFusion context for concurrent execution
-    let ctx = data_loader::create_optimized_context();
+    // Run queries (includes preprocessing and benchmarking)
+    let results = run_queries(&queries, &args.input_dir, &args.save_db, &args.load_db)?;
     
-    // PHASE 1: Load CSV files
-    data_loader::load_csv_files(&ctx, &args.input_dir).await?;
-    
-    // PHASE 2: Parse JSON queries to SQL
-    let sql_queries = query_parser::parse_queries_from_file(&args.queries)?;
-    
-    // PHASE 3: Execute SQL queries (timing measurement)
-    let start_time = Instant::now();
-    let results = query_executor::execute_queries_for_timing(&ctx, &sql_queries).await?;
-    let total_duration = start_time.elapsed();
-    println!("{:.2}", total_duration.as_secs_f64());
-    
-    // PHASE 4: Save results to CSV files if output directory is specified
+    // Write results to disk if output directory is specified
     if let Some(output_dir) = &args.output_dir {
-        result_handler::save_results_to_csv(results, output_dir).await?;
-        
-        // PHASE 5: Check results against reference directory if specified
-        if let Some(check_dir) = &args.check_dir {
-            result_handler::check_results(output_dir, check_dir).await?;
-        }
+        write_results_to_csv(&results, output_dir)?;
     }
+    
+    let total_time = total_start.elapsed();
+    println!("Total runtime: {:.3}s", total_time.as_secs_f64());
     
     Ok(())
 }

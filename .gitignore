@@ -5,3 +5,4 @@ baseline/
 # Added by cargo
 
 /target
+/.tmp
