@@ -11,3 +11,7 @@ rayon = "1.8"
 anyhow = "1.0.100"
 memmap2 = "0.9"
 arrow = { version = "56.2.0", features = ["csv", "ipc"] }
+datafusion = "50.3.0"
+datafusion-datasource-csv = "50.3.0"
+tokio = { version = "1.0", features = ["full"] }
+serde_json = "1.0"

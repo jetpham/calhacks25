@@ -1,5 +1,10 @@
 use clap::Parser;
+use datafusion::prelude::*;
 use std::path::PathBuf;
+use std::time::Instant;
+
+mod sql_converter;
+mod query_executor;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -14,14 +19,28 @@ struct Args {
     queries: PathBuf,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     
-    println!("Input Directory: {:?}", args.input_dir);
-    println!("Output Directory: {:?}", args.output_dir);
-    println!("Queries File: {:?}", args.queries);
     
-    println!("\n🚀 Ready to rebuild with proper data understanding!");
+    // Create DataFusion context
+    let ctx = SessionContext::new();
+    
+    // PHASE 1: Load CSV files
+    query_executor::load_csv_files(&ctx, &args.input_dir).await?;
+    
+    // PHASE 2: Parse JSON queries to SQL
+    let sql_queries = query_executor::parse_queries_from_file(&args.queries)?;
+    
+    // PHASE 3: Execute SQL queries
+    let start_time = Instant::now();
+
+    query_executor::execute_queries(&ctx, &sql_queries).await?;
+    
+    let total_duration = start_time.elapsed();
+    println!("{:.2}", total_duration.as_secs_f64());
     
     Ok(())
 }
