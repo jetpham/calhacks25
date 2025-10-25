@@ -5,3 +5,9 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.50", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+rayon = "1.8"
+anyhow = "1.0.100"
+memmap2 = "0.9"
+arrow = { version = "56.2.0", features = ["csv", "ipc"] }

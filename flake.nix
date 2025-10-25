@@ -25,7 +25,15 @@
             }))
             mold
             clang
+            python312
+            uv
+            gcc
+            gcc.cc.lib
+            zlib
           ];
+          shellHook = ''
+            export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${gcc.cc.lib}/lib"
+          '';
         };
       }
     );
