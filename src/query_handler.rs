@@ -13,7 +13,8 @@ pub fn parse_queries_from_file(queries_path: &PathBuf) -> Result<Vec<Value>> {
 /// Convert JSON query to SQL string (matching baseline behavior)
 pub fn assemble_sql(q: &Value) -> String {
     let select = select_to_sql(q.get("select").unwrap_or(&Value::Array(vec![])));
-    let from_tbl = q["from"].as_str().unwrap_or("events");
+    // Use events_table (materialized table) instead of events (view) for better performance
+    let from_tbl = q["from"].as_str().unwrap_or("events_table");
     let where_clause = where_to_sql(q.get("where"));
     let group_by = group_by_to_sql(q.get("group_by"));
     let order_by = order_by_to_sql(q.get("order_by"));

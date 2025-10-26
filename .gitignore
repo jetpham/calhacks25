@@ -5,6 +5,6 @@
 # Added by cargo
 
 /target
-/.tmp
+/tmp
 duck.db
 /profiling

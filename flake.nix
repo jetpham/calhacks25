@@ -44,6 +44,10 @@
             openssl.dev
           ];
           
+          shellHook = ''
+            # Export library paths for dynamically linked executables
+            export LD_LIBRARY_PATH=${gcc.cc.lib}/lib:${zlib}/lib:$LD_LIBRARY_PATH
+          '';
         };
       }
     );
