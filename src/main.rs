@@ -11,7 +11,7 @@ mod result_checker;
 
 use data_loader::{load_data, open_database};
 use preprocessor::{create_indexes_on_all_columns};
-use query_executor::{prepare_query, write_single_result_to_csv};
+use query_executor::{prepare_query, write_single_result_to_csv, explain_query};
 use query_handler::{parse_queries_from_file, assemble_sql};
 use result_checker::compare_results;
 
@@ -56,6 +56,10 @@ struct Args {
     /// Baseline directory for comparison (if provided, compares results instead of running queries)
     #[arg(long, value_name = "DIR")]
     baseline_dir: Option<PathBuf>,
+
+    /// Enable profiling with EXPLAIN ANALYZE
+    #[arg(long)]
+    profile: bool,
 }
 
 
@@ -121,29 +125,33 @@ fn main() -> Result<()> {
             .map(|sql| prepare_query(&con, sql))
             .collect::<Result<Vec<_>, _>>()?;
         
-        // Phase 3: Execute queries and collect results
+        // Phase 3: Execute queries and write results immediately
         println!("Executing {} queries...", prepared_statements.len());
         let mut total_duration = Duration::ZERO;
-        let mut query_results = Vec::new();
         
-        // Execute all queries first
+        // Execute queries and write results immediately
         for (i, stmt) in prepared_statements.iter_mut().enumerate() {
+            let sql = &sql_queries[i];
+            
+            // Optionally print EXPLAIN ANALYZE if profiling is enabled
+            if args.profile {
+                println!("\n=== Query {} EXPLAIN ANALYZE ===", i + 1);
+                explain_query(&con, sql, i + 1)?;
+                println!();
+            }
+            
+            // Run the query normally
             let query_start = Instant::now();
             let rows = stmt.query([])?;
             let duration = query_start.elapsed();
             println!("Query {} completed: {:.3}s", i + 1, duration.as_secs_f64());
             total_duration += duration;
-            query_results.push((i + 1, rows));
+            
+            // Write result immediately
+            write_single_result_to_csv(i + 1, rows, output_dir)?;
         }
 
         println!("Total query time: {:.3}s", total_duration.as_secs_f64());
-        
-        // Write all results to CSV
-        println!("Writing results to CSV...");
-        for (query_num, rows) in query_results {
-            write_single_result_to_csv(query_num, rows, output_dir)?;
-        }
-        
         println!("Results written to {:?}", output_dir);
 
         // If baseline directory was provided, compare results

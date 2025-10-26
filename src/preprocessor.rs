@@ -1,34 +1,21 @@
 use duckdb::Connection;
 use anyhow::Result;
 
-const TABLE_NAME: &str = "events";
 const MATERIALIZED_TABLE: &str = "events_table";
 
 
-/// Create indexes on specified columns (empty by default for now)
+/// Create indexes on specified columns for better query performance
 pub fn create_indexes_on_all_columns(con: &Connection) -> Result<()> {
     // Based on profiling: filter columns are type, country, ts (dates)
+    // Indexing these columns would help Q1-Q5 significantly
     let columns: Vec<&str> = vec![
-        "type",      // Most queries filter on this
-        "country",   // Query 2 filters
-        "ts",        // Date filtering in queries
-        "day",       // Grouped in queries
+        "type",      // Used in filters for Q1, Q2, Q3, Q5
+        "day",       // Used in group by for Q1
+        "country",   // Used in filters for Q2
+        "ts",        // Used for date filtering in Q2, Q5
     ];
     
-    if columns.is_empty() {
-        println!("No indexes to create");
-        return Ok(());
-    }
-    
-    println!("Materializing events data into table...");
-    
-    // Materialize the view into a table for better performance
-    con.execute(
-        &format!("CREATE TABLE IF NOT EXISTS {} AS SELECT * FROM {}", MATERIALIZED_TABLE, TABLE_NAME),
-        [],
-    )?;
-    println!("Events table materialized");
-    
+    // Note: Materialization is already done in data_loader.rs
     println!("Creating indexes on {} columns...", columns.len());
     
     // Create an index on each specified column

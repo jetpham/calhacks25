@@ -57,29 +57,47 @@ fn trim_float(v: f64) -> String {
     }
 }
 
-/// Get the query execution plan using EXPLAIN ANALYZE (executes query with runtime stats)
-pub fn _explain_query(con: &Connection, sql: &str) -> Result<String> {
-    let explain_sql = format!("EXPLAIN ANALYZE {}", sql);
-    let mut plan = String::new();
+/// Enable JSON profiling and capture the profile data
+pub fn explain_query(con: &Connection, sql: &str, query_num: usize) -> Result<()> {
+    use std::path::PathBuf;
     
-    // Execute and collect the plan (ANALYZE runs the query)
-    let mut stmt = con.prepare(&explain_sql)?;
-    let mut rows = stmt.query([])?;
+    // Save to profiling directory
+    let profile_dir = PathBuf::from("profiling");
+    std::fs::create_dir_all(&profile_dir)?;
+    let profile_file = profile_dir.join(format!("q{}.json", query_num));
+    let temp_file = format!("/tmp/duckdb_profile_{}.json", query_num);
     
-    while let Some(row) = rows.next()? {
-        plan.push_str(&row.get::<_, String>(1)?); // Column 1 contains the explain output
-        plan.push('\n');
+    // Enable JSON profiling with file output
+    con.execute("PRAGMA enable_profiling = 'json'", [])?;
+    con.execute(&format!("PRAGMA profiling_output = '{}'", temp_file), [])?;
+    
+    // Enable useful metrics
+    con.execute(
+        r#"PRAGMA custom_profiling_settings = '{"OPERATOR_TIMING": "true", "OPERATOR_CARDINALITY": "true", "CPU_TIME": "true", "EXTRA_INFO": "true"}'"#,
+        [],
+    )?;
+    
+    // Execute the query (this will write the profile to file)
+    let mut stmt = con.prepare(sql)?;
+    let _rows = stmt.query([])?;
+    
+    
+    // Read the profile JSON and copy it to our profiling directory
+    match std::fs::read_to_string(&temp_file) {
+        Ok(json_content) => {
+            // Write to our profiling directory
+            std::fs::write(&profile_file, &json_content)?;
+            
+            // Clean up temp file
+            let _ = std::fs::remove_file(&temp_file);
+        }
+        Err(e) => {
+            eprintln!("Could not read profile file: {}", e);
+            println!("Could not read profile file: {}", e);
+        }
     }
     
-    Ok(plan)
-}
-
-/// Query result structure
-#[derive(Debug)]
-pub struct QueryResult {
-    pub query_num: usize,
-    pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
+    Ok(())
 }
 
 /// Prepare a SQL statement and return it
