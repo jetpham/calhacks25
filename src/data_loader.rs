@@ -3,46 +3,11 @@ use duckdb::Connection;
 use std::path::PathBuf;
 use std::fs;
 use std::time::Instant;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use crate::profiler::{ProfilingConfig, ProfilingMode, setup_profiling};
-use rayon::prelude::*;
-use indicatif::{ProgressBar, ProgressStyle};
 
 const TABLE_NAME: &str = "events";
 
-/// Generate all index combinations for sequential processing
-fn generate_index_combinations(columns: &[&str]) -> Vec<(String, String)> {
-    let mut combinations = Vec::new();
-    
-    // Single column indexes
-    for col in columns {
-        combinations.push((col.to_string(), col.to_string()));
-    }
-    
-    // Two-column combinations
-    for i in 0..columns.len() {
-        for j in (i+1)..columns.len() {
-            let cols = format!("{}, {}", columns[i], columns[j]);
-            let name = format!("{}_{}", columns[i], columns[j]);
-            combinations.push((name, cols));
-        }
-    }
-    
-    // Three-column combinations
-    for i in 0..columns.len() {
-        for j in (i+1)..columns.len() {
-            for k in (j+1)..columns.len() {
-                let cols = format!("{}, {}, {}", columns[i], columns[j], columns[k]);
-                let name = format!("{}_{}_{}", columns[i], columns[j], columns[k]);
-                combinations.push((name, cols));
-            }
-        }
-    }
-    
-    combinations
-}
-
-/// Load data from CSV files into DuckDB with persistent storage and indexes
+/// Load data from CSV files into DuckDB with persistent storage
 pub fn load_data(con: &Connection, data_dir: &PathBuf, db_path: &PathBuf) -> Result<()> {
     let total_start = Instant::now();
     
@@ -97,6 +62,10 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, db_path: &PathBuf) -> Res
     
     con.execute(&format!(
         r#"
+        -- Create optimized enums
+        CREATE TYPE event_type AS ENUM ('serve', 'impression', 'click', 'purchase');
+        CREATE TYPE country_code AS ENUM ('US', 'CA', 'DE', 'FR', 'JP', 'MX', 'GB', 'BR', 'KR', 'AU', 'IN', 'ES');
+        
         CREATE OR REPLACE TABLE {} AS
         WITH raw AS (
           SELECT *
@@ -111,9 +80,9 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, db_path: &PathBuf) -> Res
               'auction_id': 'VARCHAR',
               'advertiser_id': 'INTEGER',
               'publisher_id': 'INTEGER',
-              'bid_price': 'DOUBLE',
+              'bid_price': 'DECIMAL(10,4)',
               'user_id': 'BIGINT',
-              'total_price': 'DOUBLE',
+              'total_price': 'DECIMAL(10,4)',
               'country': 'VARCHAR'
             }}
           )
@@ -121,14 +90,14 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, db_path: &PathBuf) -> Res
         casted AS (
           SELECT
             to_timestamp(ts / 1000.0)                    AS ts,
-            type,
-            auction_id,
+            type::event_type                             AS type,
+            auction_id::UUID                             AS auction_id,
             advertiser_id,
             publisher_id,
             COALESCE(bid_price, 0.0)                     AS bid_price,
             user_id,
-            COALESCE(total_price, 0.0)                   AS total_price,
-            country,
+            ROUND(COALESCE(total_price, 0.0), 2)         AS total_price,
+            country::country_code                        AS country,
             CASE 
               WHEN ts IS NOT NULL AND ts > 0 THEN DATE(DATE_TRUNC('week', to_timestamp(ts / 1000.0)))
               ELSE NULL 
@@ -159,106 +128,28 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, db_path: &PathBuf) -> Res
     let table_creation_time = step_start.elapsed();
     println!("Table creation & data loading: {:.3}s", table_creation_time.as_secs_f64());
 
-    // Step 3: Create ALL possible index permutations for maximum query speed
-    let step_start = Instant::now();
-    
-    // Define all columns for indexing (excluding problematic week column)
-    let columns = vec![
-        "type", "country", "day", "hour", "minute", 
-        "advertiser_id", "publisher_id", "user_id"
-    ];
-    
-    // Generate all index combinations for parallel processing
-    let index_combinations = generate_index_combinations(&columns);
-    let total_indexes = index_combinations.len();
-    
-    println!("Creating {} indexes in parallel...", total_indexes);
-    
-    // Process indexes in parallel with infinite retry until success
-    let success_counter = Arc::new(AtomicUsize::new(0));
-    
-    // Create progress bar
-    let pb = ProgressBar::new(total_indexes as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
-            .unwrap()
-            .progress_chars("#>-")
-    );
-    pb.set_message("Creating indexes in parallel...");
-    
-    println!("Processing {} indexes in parallel with infinite retry...", total_indexes);
-    
-    // Frankenstein approach: Each index retries infinitely until success
-    index_combinations
-        .par_iter()
-        .for_each(|(name, cols)| {
-            let sql = format!("CREATE INDEX IF NOT EXISTS idx_{}_{} ON {}({})", 
-                TABLE_NAME, name, TABLE_NAME, cols);
-            
-            // Retry infinitely until success
-            loop {
-                // Create connection and execute
-                match Connection::open(db_path) {
-                    Ok(thread_con) => {
-                            match thread_con.execute(&sql, []) {
-                                Ok(_) => {
-                                    let current_count = success_counter.fetch_add(1, Ordering::Relaxed);
-                                    pb.set_position((current_count + 1) as u64);
-                                    pb.set_message(format!("Created: {}", name));
-                                    return;
-                                },
-                                Err(e) => {
-                                    // Print error and retry immediately
-                                    println!("Error creating index {}: {} - retrying...", name, e);
-                                    continue;
-                                }
-                            }
-                    },
-                    Err(e) => {
-                        // Print connection error and retry immediately
-                        println!("Connection error for index {}: {} - retrying...", name, e);
-                        continue;
-                    }
-                }
-            }
-        });
-    
-    pb.finish_with_message("All indexes created successfully!");
-    
-    // All indexes should succeed since we retry infinitely
-    let final_success = success_counter.load(Ordering::Relaxed);
-    println!("All {} indexes created successfully!", final_success);
-    
-    let all_indexes_time = step_start.elapsed();
-    println!("All index permutations created: {:.3}s", all_indexes_time.as_secs_f64());
-    
-    // Step 4: Pre-warm the database
+    // Step 3: Pre-warm the database
     let step_start = Instant::now();
     con.execute("SELECT COUNT(*) FROM events", [])?;
     let prewarm_time = step_start.elapsed();
     println!("Database pre-warming: {:.3}s", prewarm_time.as_secs_f64());
     
-    // Step 5: Analyze the table for better query planning
+    // Step 4: Analyze the table for better query planning
     let step_start = Instant::now();
     con.execute("ANALYZE events", [])?;
     let analyze_time = step_start.elapsed();
     println!("Table analysis: {:.3}s", analyze_time.as_secs_f64());
     
-    // Step 6: DuckDB optimization settings
+    // Step 5: DuckDB optimization settings
     let step_start = Instant::now();
     con.execute("SET enable_progress_bar = false", [])?; // Disable progress bar for cleaner output
-    
-    // Additional DuckDB optimizations for better index usage
-    con.execute("SET enable_progress_bar = false", [])?;
     
     let optimization_time = step_start.elapsed();
     println!("DuckDB optimization settings: {:.3}s", optimization_time.as_secs_f64());
 
     let total_time = total_start.elapsed();
-    println!("\n=== Data Loading Complete ===");
+    println!("\n=== Optimized Data Loading Complete ===");
     println!("Total time: {:.3}s", total_time.as_secs_f64());
-    println!("Successfully created {}/{} indexes", final_success, total_indexes);
     println!("Database saved to: {:?}", db_path);
     println!("Ready for lightning-fast query execution! ⚡");
     

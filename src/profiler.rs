@@ -328,7 +328,7 @@ fn generate_optimization_recommendations(report: &mut String, results: &[Profili
         for op in &result.operator_breakdown {
             if op.operator_type == "TABLE_SCAN" && op.rows_scanned > 1_000_000 {
                 recommendations.push(format!(
-                    "Query '{}' performs large sequential scan ({} rows). Consider adding appropriate indexes.",
+                    "Query '{}' performs large sequential scan ({} rows). Consider optimizing the query or data structure.",
                     result.phase, op.rows_scanned
                 ));
             }

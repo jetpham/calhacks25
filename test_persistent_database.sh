@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# DuckDB Persistent Database with Indexes Test Script
-# This script creates a persistent database with proper indexes and tests performance
+# DuckDB Persistent Database Test Script
+# This script creates a persistent database and tests performance
 
 echo "🚀 DuckDB Persistent Database Test"
 echo "================================="
@@ -9,39 +9,30 @@ echo "================================="
 # Create profiling output directory
 mkdir -p profiling
 
-echo "📊 Step 1: Creating persistent database with indexes..."
+echo "📊 Step 1: Creating persistent database..."
 echo "Memory limit: 16GB"
 echo "Storage: Persistent disk-based database"
-echo "This may take several minutes due to index creation..."
 
-# Create persistent database with indexes
-cargo run --release -- --input-dir data/data-lite --save-db profiling/events_persistent_indexed.db
+# Create persistent database
+cargo run --release -- --input-dir data/data-lite --save-db profiling/events_persistent.db
 
 echo ""
-echo "🔍 Step 2: Verifying indexes were created..."
+echo "🔍 Step 2: Verifying database was created..."
 
 # Wait a moment for file to be fully written
 sleep 2
-if [ -f "profiling/events_persistent_indexed.db" ]; then
+if [ -f "profiling/events_persistent.db" ]; then
     echo "✅ Persistent database file created successfully"
     
     # Check database size
     echo "📊 Database size:"
-    ls -lh profiling/events_persistent_indexed.db
-    
-    # Verify indexes using DuckDB (if available)
-    if command -v duckdb &> /dev/null; then
-        echo "📋 Verifying indexes in database..."
-        duckdb profiling/events_persistent_indexed.db -c "SELECT index_name, table_name, schema_name, is_unique FROM duckdb_indexes() WHERE table_name = 'events' ORDER BY index_name;"
-    else
-        echo "⚠️ DuckDB CLI not available - cannot verify indexes directly"
-    fi
+    ls -lh profiling/events_persistent.db
     
     echo ""
     echo "📊 Step 3: Running queries with comprehensive profiling..."
     
-    # Run queries with profiling using the persistent indexed database
-    cargo run --release -- --run --load-db profiling/events_persistent_indexed.db --queries queries.json --output-dir results/persistent-indexed
+    # Run queries with profiling using the persistent database
+    cargo run --release -- --run --load-db profiling/events_persistent.db --queries queries.json --output-dir results/persistent
     
     echo ""
     echo "📈 Step 4: Analyzing performance improvements..."
@@ -75,31 +66,20 @@ if [ -f "profiling/events_persistent_indexed.db" ]; then
         echo "==================="
         echo "• Profiling report: profiling/profiling_report.md"
         echo "• Query profile JSON: profiling/query_profile.json"
-        echo "• Query results: results/persistent-indexed/"
-        echo "• Persistent database: profiling/events_persistent_indexed.db"
+        echo "• Query results: results/persistent/"
+        echo "• Persistent database: profiling/events_persistent.db"
         
         if [ -f "profiling/query_graph.html" ]; then
             echo "• Query graph: profiling/query_graph.html"
         fi
         
         echo ""
-        echo "🔧 Index Information:"
-        echo "==================="
-        echo "The following optimized indexes were created:"
-        echo "• idx_events_type_day_minute (type, day, minute)"
-        echo "• idx_events_type_country_day (type, country, day)"
-        echo "• idx_events_type_day (type, day)"
-        echo "• idx_events_advertiser_type (advertiser_id, type)"
-        echo "• Plus single-column indexes for all major columns"
-        
-        echo ""
         echo "📊 Expected Improvements:"
         echo "======================="
-        echo "With persistent storage and indexes, you should see:"
-        echo "• Dramatically reduced row scanning (billions → thousands)"
-        echo "• Lower memory usage (82GB → ~1-2GB)"
-        echo "• Faster execution times"
-        echo "• Index scans instead of sequential scans"
+        echo "With persistent storage, you should see:"
+        echo "• Reduced memory usage"
+        echo "• Faster subsequent query execution"
+        echo "• Persistent data storage"
         
     else
         echo "❌ Profiling report not found. Check for errors above."
@@ -111,4 +91,4 @@ fi
 
 echo ""
 echo "✨ Persistent database test complete!"
-echo "The database with indexes is now saved and can be reused for future queries."
+echo "The database is now saved and can be reused for future queries."
