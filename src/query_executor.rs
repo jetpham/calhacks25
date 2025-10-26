@@ -3,7 +3,6 @@ use duckdb::Connection;
 use std::path::PathBuf;
 use std::fs;
 
-/// Extract a value from a row as a properly formatted string
 fn extract_value_as_string(row: &duckdb::Row, col_index: usize) -> String {
     let value = row.get_ref::<usize>(col_index).unwrap();
     match value {
@@ -30,7 +29,6 @@ fn extract_value_as_string(row: &duckdb::Row, col_index: usize) -> String {
         },
         duckdb::types::ValueRef::Blob(bytes) => format!("{:?}", bytes),
         duckdb::types::ValueRef::Date32(i) => {
-            // Convert epoch days to date string
             use chrono::{NaiveDate, Datelike};
             let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
             if let Some(date) = epoch.checked_add_signed(chrono::Duration::days(i as i64)) {
@@ -41,15 +39,12 @@ fn extract_value_as_string(row: &duckdb::Row, col_index: usize) -> String {
         },
         duckdb::types::ValueRef::Time64(_, i) => i.to_string(),
         duckdb::types::ValueRef::Interval { months, days, nanos } => format!("{}-{}-{}", months, days, nanos),
-        // Handle other complex types as needed, or fallback:
         _ => "<unsupported>".to_string(),
     }
 }
 
-/// Trim unnecessary trailing zeros from float representation  
 fn trim_float(v: f64) -> String {
     let s = v.to_string();
-    // Remove trailing zeros and decimal point if not needed
     if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
     } else {
@@ -57,38 +52,30 @@ fn trim_float(v: f64) -> String {
     }
 }
 
-/// Enable JSON profiling and capture the profile data
 pub fn explain_query(con: &Connection, sql: &str, query_num: usize) -> Result<()> {
     use std::path::PathBuf;
     
-    // Save to profiling directory
     let profile_dir = PathBuf::from("profiling");
     std::fs::create_dir_all(&profile_dir)?;
     let profile_file = profile_dir.join(format!("q{}.json", query_num));
     let temp_file = format!("/tmp/duckdb_profile_{}.json", query_num);
     
-    // Enable JSON profiling with file output
     con.execute("PRAGMA enable_profiling = 'json'", [])?;
     con.execute(&format!("PRAGMA profiling_output = '{}'", temp_file), [])?;
     
-    // Enable useful metrics
     con.execute(
         r#"PRAGMA custom_profiling_settings = '{"OPERATOR_TIMING": "true", "OPERATOR_CARDINALITY": "true", "CPU_TIME": "true", "EXTRA_INFO": "true"}'"#,
         [],
     )?;
     
-    // Execute the query (this will write the profile to file)
     let mut stmt = con.prepare(sql)?;
     let _rows = stmt.query([])?;
     
     
-    // Read the profile JSON and copy it to our profiling directory
     match std::fs::read_to_string(&temp_file) {
         Ok(json_content) => {
-            // Write to our profiling directory
             std::fs::write(&profile_file, &json_content)?;
             
-            // Clean up temp file
             let _ = std::fs::remove_file(&temp_file);
         }
         Err(e) => {
@@ -100,36 +87,30 @@ pub fn explain_query(con: &Connection, sql: &str, query_num: usize) -> Result<()
     Ok(())
 }
 
-/// Prepare a SQL statement and return it
 pub fn prepare_query<'a>(con: &'a Connection, sql: &str) -> Result<duckdb::Statement<'a>> {
     let stmt = con.prepare(sql)?;
     Ok(stmt)
 }
 
-/// Write a single query result to CSV
 pub fn write_single_result_to_csv(
     query_num: usize,
     mut rows: duckdb::Rows,
     output_dir: &PathBuf,
 ) -> Result<()> {
-    // Create output directory if it doesn't exist
     fs::create_dir_all(output_dir)?;
     
     let out_path = output_dir.join(format!("q{}.csv", query_num));
     let mut file = std::fs::File::create(&out_path)?;
     let mut wtr = csv::Writer::from_writer(&mut file);
     
-    // Get column names from the statement after it's been executed
     let stmt_ref = rows.as_ref().ok_or_else(|| anyhow::anyhow!("Failed to get statement reference"))?;
     let column_count = stmt_ref.column_count();
     let columns: Vec<String> = (0..column_count)
         .map(|i| stmt_ref.column_name(i).map(|s| s.to_string()))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     
-    // Write header
     wtr.write_record(&columns)?;
     
-    // Write rows
     while let Some(row) = rows.next()? {
         let mut record = Vec::new();
         for i in 0..column_count {

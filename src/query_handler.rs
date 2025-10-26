@@ -3,17 +3,14 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::fs;
 
-/// Parse queries from JSON file
 pub fn parse_queries_from_file(queries_path: &PathBuf) -> Result<Vec<Value>> {
     let content = fs::read_to_string(queries_path)?;
     let queries: Vec<Value> = serde_json::from_str(&content)?;
     Ok(queries)
 }
 
-/// Convert JSON query to SQL string (matching baseline behavior)
 pub fn assemble_sql(q: &Value) -> String {
     let select = select_to_sql(q.get("select").unwrap_or(&Value::Array(vec![])));
-    // Use events_table (materialized table) instead of events (view) for better performance
     let from_tbl = q["from"].as_str().unwrap_or("events_table");
     let where_clause = where_to_sql(q.get("where"));
     let group_by = group_by_to_sql(q.get("group_by"));
@@ -92,7 +89,6 @@ fn where_to_sql(where_clause: Option<&Value>) -> String {
 }
 
 fn format_value_for_sql(val: &serde_json::Value) -> String {
-    // For lt/lte/gt/gte comparisons, don't add quotes around numeric values
     if let Some(num) = val.as_f64() {
         if num.fract() == 0.0 {
             format!("{}", num as i64)
@@ -108,7 +104,6 @@ fn format_value_for_sql(val: &serde_json::Value) -> String {
                 format!("{}", num)
             }
         } else {
-            // Not a number, use quotes
             format!("'{}'", str_val)
         }
     } else if let Some(num) = val.as_u64() {
@@ -116,7 +111,6 @@ fn format_value_for_sql(val: &serde_json::Value) -> String {
     } else if let Some(num) = val.as_i64() {
         format!("{}", num)
     } else {
-        // Fallback - try to convert to string
         val.to_string()
     }
 }

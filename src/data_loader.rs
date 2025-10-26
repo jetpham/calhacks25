@@ -4,19 +4,14 @@ use anyhow::Result;
 
 pub const MATERIALIZED_TABLE: &str = "events_table";
 
-/// Load data from CSV files into DuckDB as a table (not a view)
-/// This loads all data into memory for fast query execution
 pub fn load_data(con: &Connection, data_dir: &PathBuf) -> Result<()> {
     println!("Creating events_table from source data...");
     
-    // Use glob pattern for DuckDB read_csv
     let csv_pattern = format!("{}/events_part_*.csv", data_dir.to_string_lossy());
     
-    // Drop existing events_table if it exists
     println!("Step 1: Dropping existing events_table if it exists...");
     let _ = con.execute(&format!("DROP TABLE IF EXISTS {}", MATERIALIZED_TABLE), []);
     
-    // Try to create from existing events table first, otherwise load from CSV
     println!("Step 2: Attempting to create events_table from existing events...");
     
     let use_existing = con.execute(
@@ -25,10 +20,8 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf) -> Result<()> {
     );
     
     if use_existing.is_err() {
-        // Events table doesn't exist, need to load from CSV
         println!("No existing events table found, loading from CSV files...");
         
-        // Create a temporary view from CSV
         con.execute(
             &format!(
                 r#"
@@ -87,7 +80,6 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf) -> Result<()> {
             [],
         )?;
         
-        // Now materialize from temp view
         println!("Step 3: Materializing from CSV into events_table...");
         con.execute(
             &format!("CREATE TABLE {} AS SELECT * FROM temp_events", MATERIALIZED_TABLE),
@@ -102,5 +94,3 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf) -> Result<()> {
     
     Ok(())
 }
-
-// open_database function removed - using in-memory connection directly in main.rs

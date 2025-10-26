@@ -8,3 +8,4 @@
 /tmp
 duck.db
 /profiling
+*.db
