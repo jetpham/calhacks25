@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 use std::time::{Instant, Duration};
 use duckdb::Connection;
 
@@ -11,7 +11,7 @@ mod query_handler;
 mod result_checker;
 
 use data_loader::load_data;
-use preprocessor::{create_indexes_concurrent_file, create_rollup_tables};
+use preprocessor::{create_indexes, create_rollup_tables};
 use query_executor::{prepare_query, write_single_result_to_csv, explain_query};
 use query_handler::{parse_queries_from_file, assemble_sql};
 use result_checker::compare_results;
@@ -52,6 +52,47 @@ struct Args {
     skip_save: bool,
 }
 
+fn find_next_db_filename() -> Result<PathBuf> {
+    // First check if any duckN.db files exist
+    if !Path::new("duck1.db").exists() {
+        return Ok(PathBuf::from("duck1.db"));
+    }
+    
+    // Find the highest existing number
+    let mut max_num = 0;
+    for i in 1..=100 {
+        let path = format!("duck{}.db", i);
+        if Path::new(&path).exists() {
+            max_num = i;
+        }
+    }
+    
+    // Return the next available number
+    Ok(PathBuf::from(format!("duck{}.db", max_num + 1)))
+}
+
+fn find_latest_db_filename() -> Result<PathBuf> {
+    // Check for old database location first (backward compatibility)
+    let old_db = PathBuf::from("tmp/concurrent.duckdb");
+    if old_db.exists() {
+        return Ok(old_db);
+    }
+    
+    // Find the highest existing number
+    let mut max_num = 0;
+    for i in 1..=100 {
+        let path = format!("duck{}.db", i);
+        if Path::new(&path).exists() {
+            max_num = i;
+        }
+    }
+    
+    if max_num == 0 {
+        return Ok(PathBuf::from("duck1.db"));
+    }
+    
+    Ok(PathBuf::from(format!("duck{}.db", max_num)))
+}
 
 fn main() -> Result<()> {
     let total_start = Instant::now();
@@ -66,8 +107,11 @@ fn main() -> Result<()> {
         }
     }
 
-    let db_path = PathBuf::from("tmp/concurrent.duckdb");
-    std::fs::create_dir_all("tmp")?;
+    let db_path = if args.use_existing {
+        find_latest_db_filename()?
+    } else {
+        find_next_db_filename()?
+    };
     
     println!("Using persistent database: {}", db_path.display());
     
@@ -86,8 +130,8 @@ fn main() -> Result<()> {
         
         println!("Database saved to {}", db_path.display());
         
-        println!("Creating indexes concurrently on persistent database...");
-        create_indexes_concurrent_file(&db_path)?;
+        println!("Creating indexes on persistent database...");
+        create_indexes(&file_con)?;
         
         println!("Database setup complete");
     }
