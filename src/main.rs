@@ -10,10 +10,12 @@ mod query_handler;
 mod result_checker;
 
 use data_loader::{load_data, open_database};
-use preprocessor::{create_indexes_on_all_columns};
+use preprocessor::{check_column_cardinality, create_indexes_on_all_columns};
 use query_executor::{prepare_query, write_single_result_to_csv, explain_query};
 use query_handler::{parse_queries_from_file, assemble_sql};
 use result_checker::compare_results;
+
+use crate::preprocessor::create_rollup_tables;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -98,9 +100,27 @@ fn main() -> Result<()> {
     let con = open_database(db_path_to_use)?;
     
     // Load data if creating new database
-    if args.load_db.is_none() {
+    let needs_data_load = if args.load_db.is_none() {
+        true
+    } else {
+        // When loading existing DB, check if events_table exists
+        let result = con.execute("SELECT 1 FROM events_table LIMIT 1", []);
+        result.is_err() // true if table doesn't exist
+    };
+    
+    if needs_data_load {
         load_data(&con, &args.input_dir)?;
+        
+        // Check cardinality before creating indexes
+        check_column_cardinality(&con)?;
+        
         create_indexes_on_all_columns(&con)?;
+        
+        create_rollup_tables(&con)?;
+    
+
+    } else {
+        println!("Using existing events_table from loaded database");
     }
     
     // Parse queries from JSON file
