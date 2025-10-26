@@ -6,13 +6,11 @@ use std::time::Instant;
 
 mod data_loader;
 mod query_executor;
-mod query_parser;
-mod sql_assembler;
-mod profiler;
+mod query_handler;
 
-use data_loader::{load_data, load_database_from_file};
-use query_executor::{run_queries, write_results_to_csv};
-use query_parser::parse_queries_from_file;
+use data_loader::{load_data, load_database};
+use query_executor::{execute_query, write_results_to_csv};
+use query_handler::{parse_queries_from_file, assemble_sql};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -35,23 +33,19 @@ struct Args {
     )]
     queries: PathBuf,
 
-    #[arg(long, value_name = "DIR")]
-    check_dir: Option<PathBuf>,
-
-    /// Save the preprocessed database to a file after data loading
+    /// Save the database to a file after data loading
     #[arg(
         long,
         value_name = "FILE",
-        default_value = "duck.db",
-        conflicts_with = "load_db"
+        default_value = "duck.db"
     )]
     save_db: Option<PathBuf>,
 
-    /// Load a preprocessed database from a file instead of loading from CSV
+    /// Load a database from a file instead of loading from CSV
     #[arg(
         long,
         value_name = "FILE",
-        conflicts_with = "save_db"
+        conflicts_with = "input_dir"
     )]
     load_db: Option<PathBuf>,
 }
@@ -62,10 +56,10 @@ struct Args {
 /// 
 /// ## How it works:
 /// 
-/// 1. **Database Loading**: Loads data from CSV files or a preprocessed database file
+/// 1. **Database Loading**: Loads data from CSV files or a database file
 ///    - If `--load-db` is specified: loads from the specified database file
-///    - Otherwise: loads from CSV files in the input directory and preprocesses the data
-///    - If `--save-db` is specified: saves the preprocessed database to a file
+///    - Otherwise: loads from CSV files in the input directory
+///    - If `--save-db` is specified: saves the database to a file
 /// 
 /// 2. **Query Processing**: Parses and executes queries from a JSON file
 ///    - Queries are parsed from the specified JSON file (default: queries.json)
@@ -75,59 +69,46 @@ struct Args {
 /// ## Usage Examples:
 /// 
 /// ```bash
-/// # Just preprocess data and save to database file
-/// cargo run -- --input-dir data/data
-/// 
-/// # Load preprocessed data and run queries
-/// cargo run -- --run --load-db --queries queries.json --output-dir results/
-/// 
-/// # Process from CSV and run queries in one step
-/// cargo run -- --run --input-dir data/data --queries queries.json --output-dir results/
-/// 
-/// # Use custom database file names
+/// # Load data and save to database file
 /// cargo run -- --input-dir data/data --save-db my_db.db
+/// 
+/// # Load from database and run queries
 /// cargo run -- --run --load-db my_db.db --queries queries.json --output-dir results/
+/// 
+/// # Load from CSV and run queries in one step
+/// cargo run -- --run --input-dir data/data --queries queries.json --output-dir results/
 /// ```
-/// 
-/// ## Architecture:
-/// 
-/// - **data_loader**: Handles CSV loading, data preprocessing, and database persistence
-/// - **query_parser**: Parses JSON query definitions into internal format
-/// - **sql_assembler**: Converts internal query format to SQL
-/// - **query_executor**: Executes SQL queries and manages results
 fn main() -> Result<()> {
     let total_start = Instant::now();
     let args = Args::parse();
 
-    // Step 2: Load database from file or create persistent database
+    // Load database from file or create and load from CSV
     let con = if let Some(db_path) = &args.load_db {
-        // Load database from file
-        load_database_from_file(db_path)?
+        println!("Loading database from {:?}...", db_path);
+        load_database(db_path)?
     } else {
-        // Create persistent database file and load data from CSVs
-        let db_path = args.save_db.unwrap(); // Should never be None due to default_value
-        
-        // Remove existing database file if it exists to avoid serialization errors
-        if db_path.exists() {
-            std::fs::remove_file(&db_path)?;
-            println!("Removed existing database file: {:?}", db_path);
-        }
-        
-        let con = Connection::open(&db_path)?;
-        load_data(&con, &args.input_dir, &db_path)?;
-        
-        println!("Persistent database created at: {:?}", db_path);
+        println!("Loading data from CSV files...");
+        let con = Connection::open(":memory:")?;
+        load_data(&con, &args.input_dir)?;
         con
     };
-    // Step 1: Parse queries from JSON file
+    
+    // Parse queries from JSON file
     let queries = parse_queries_from_file(&args.queries)?;
     println!("Parsed {} queries", queries.len());
+    
     if args.run {
-        // Step 3: Run queries and get results
-        let results = run_queries(&con, &queries)?;
+        // Convert queries to SQL and execute
+        let mut results = Vec::new();
+        for (i, query) in queries.iter().enumerate() {
+            let sql = assemble_sql(query);
+            let result = execute_query(&con, &sql, i + 1)?;
+            results.push(result);
+        }
+        
         println!("Executed {} queries", results.len());
 
-        // Step 4: Write results to disk if output directory is specified
+        // Write results to disk if output directory is specified
         if let Some(output_dir) = &args.output_dir {
             write_results_to_csv(&results, output_dir)?;
             println!("Results written to {:?}", output_dir);
