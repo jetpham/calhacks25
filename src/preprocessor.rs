@@ -2,81 +2,9 @@ use duckdb::Connection;
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 
-const MATERIALIZED_TABLE: &str = "events_table";
+use crate::data_loader::MATERIALIZED_TABLE;
+
 const ENABLE_INDEX_CREATION: bool = true;
-
-/// Check cardinality (unique values) for each column to determine safe indexes
-pub fn check_column_cardinality(con: &Connection) -> Result<()> {
-    if !ENABLE_INDEX_CREATION {
-        println!("Index creation disabled, skipping cardinality check");
-        return Ok(());
-    }
-    
-    let columns = vec![
-        "ts", "week", "day", "hour", "minute",
-        "type", "auction_id", "advertiser_id", "publisher_id",
-        "bid_price", "user_id", "total_price", "country"
-    ];
-    
-    println!("\nColumn Cardinality Analysis:");
-    println!("{:-<70}", "");
-    
-    let mut cardinalities = Vec::new();
-    
-    for column in &columns {
-        let sql = format!("SELECT COUNT(DISTINCT {}) as unique_count FROM {}", column, MATERIALIZED_TABLE);
-        
-        let mut stmt = con.prepare(&sql)?;
-        let mut rows = stmt.query([])?;
-        
-        if let Some(row) = rows.next()? {
-            let unique_count: u64 = row.get(0)?;
-            cardinalities.push((column.to_string(), unique_count));
-            println!("{:15} : {:>10} unique values", column, unique_count);
-        }
-    }
-    
-    println!("{:-<70}", "");
-    
-    // Estimate memory usage for indexes
-    // Rule of thumb: each unique value in an index needs ~16-24 bytes
-    println!("\nEstimating index memory usage (conservative 20 bytes per unique value):");
-    
-    let mut total_single_memory = 0u64;
-    for (col, card) in &cardinalities {
-        let memory_mb = (*card as f64 * 20.0) / (1024.0 * 1024.0);
-        total_single_memory += card * 20;
-        println!("  {}: {:.2} MB", col, memory_mb);
-    }
-    
-    // Estimate memory for composite indexes (product of cardinalities)
-    println!("\nEstimating composite index memory (20 bytes per unique combination):");
-    let mut total_composite_memory = 0u64;
-    
-    for (i, (col1, card1)) in cardinalities.iter().enumerate() {
-        for (col2, card2) in cardinalities.iter().skip(i + 1) {
-            // Estimate composite cardinality as sqrt(prod) for better accuracy
-            let composite_card = ((card1 * card2) as f64).sqrt() as u64;
-            let memory_mb = (composite_card as f64 * 20.0) / (1024.0 * 1024.0);
-            total_composite_memory += composite_card * 20;
-            println!("  ({}, {}): {:.2} MB (est. {} unique combos)", col1, col2, memory_mb, composite_card);
-        }
-    }
-    
-    println!("\nEstimated single-column indexes total: {:.2} MB", (total_single_memory as f64) / (1024.0 * 1024.0));
-    println!("Estimated composite indexes total: {:.2} MB", (total_composite_memory as f64) / (1024.0 * 1024.0));
-    
-    let total_memory_gb = (total_single_memory as f64 + total_composite_memory as f64) / (1024.0 * 1024.0 * 1024.0);
-    println!("Total estimated memory: {:.2} GB", total_memory_gb);
-    
-    if total_memory_gb > 8.0 {
-        println!("\n⚠️  WARNING: Estimated index memory ({:.2} GB) exceeds 8GB!", total_memory_gb);
-        println!("   Consider reducing number of indexes created.");
-    }
-    
-    Ok(())
-}
-
 
 /// Create indexes on specified columns for better query performance
 pub fn create_indexes_on_all_columns(con: &Connection) -> Result<()> {
@@ -233,6 +161,9 @@ pub fn create_rollup_tables(con: &Connection) -> Result<()> {
     
     let agg_str = aggregations.join(", ");
     
+    let total_rollups = rollups.len();
+    let mut success_count = 0;
+    
     for (table_name, group_cols) in rollups {
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {} AS SELECT {}, {} FROM {} GROUP BY {}",
@@ -241,9 +172,14 @@ pub fn create_rollup_tables(con: &Connection) -> Result<()> {
         
         if let Err(e) = con.execute(&sql, []) {
             eprintln!("Warning: Failed to create rollup table {}: {}", table_name, e);
+            // Continue with next rollup instead of crashing
+        } else {
+            success_count += 1;
         }
         pb.inc(1);
     }
+    
+    println!("\nSuccessfully created {}/{} rollup tables", success_count, total_rollups);
     
     pb.finish_with_message("Rollup creation complete");
     Ok(())

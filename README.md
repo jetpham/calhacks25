@@ -1,6 +1,32 @@
 # CalHacks Database Query Optimizer
 
-A high-performance Rust-based query execution engine built on DuckDB for analytics workloads.
+A Rust-based query execution optimized for a silly dataset
+> built on DuckDB 
+
+## Quick Start
+
+### Run Queries on Judges laptops
+
+```bash
+# First run: prepares database in-memory and saves to disk
+./calhacks --run --runs 10 --input-dir data/data --output-dir results/benchmark-full --baseline-dir results/results-full
+
+# Subsequent runs with same data: uses cached duck.db file
+# (automatically created and reused, no need to specify)
+```
+
+## Command Line Arguments
+
+| Argument | Description | Example |
+|----------|-------------|---------|
+| `--run` | **Required flag** to execute queries | `--run` |
+| `--output-dir DIR` | Where to save query result CSV files | `--output-dir results/test` |
+| `--input-dir DIR` | Directory containing CSV input files | `--input-dir data/data-small` |
+| `--baseline-dir DIR` | Compare results against baseline directory | `--baseline-dir results/baseline` |
+| `--runs N` | Number of times to run each query (for averaging) | `--runs 5` |
+| `--queries FILE` | JSON file with query definitions | `--queries my_queries.json` |
+| `--profile` | Enable query profiling | `--profile` |
+| `--load-db FILE` | Load pre-built database instead of CSV | `--load-db my.db` |
 
 ## Features
 
@@ -39,10 +65,56 @@ A high-performance Rust-based query execution engine built on DuckDB for analyti
            └────────────────┘         └─────────────────┘
 ```
 
-## Building
+## Building on Mac (M2)
+
+**Recommended: Build natively on the Mac**
+
+Cross-compiling with DuckDB's dynamic library from Linux is complex. Build directly on the Mac:
 
 ```bash
+# On the Mac itself (install Rust first if needed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+# Navigate to project and build
 cargo build --release
+
+# Binary will be at: ./target/release/calhacks
+```
+
+### Alternative: Cross-compile from Linux (complex)
+
+If you must cross-compile, you'll need to provide libduckdb for Mac:
+
+```bash
+# Add the Mac target
+rustup target add aarch64-apple-darwin
+
+# Install cargo-zigbuild
+cargo install --locked cargo-zigbuild
+
+# Download and place libduckdb.dylib in the project
+# Then build
+cargo zigbuild --release --target aarch64-apple-darwin
+```
+
+**Note**: Cross-compilation requires manually providing the DuckDB library, which makes native Mac building much simpler.
+
+## Checking Dynamic Dependencies
+
+To see what external libraries are needed:
+
+```bash
+# On Mac
+otool -L ./target/release/calhacks
+
+# On Linux (for reference)
+ldd ./target/release/calhacks
+```
+
+**DuckDB dependency**: The binary requires DuckDB to be installed on the Mac. Install it with:
+```bash
+brew install duckdb
 ```
 
 ## Usage
@@ -76,6 +148,20 @@ Enable detailed query profiling:
 
 Profiles are saved to `profiling/q1.json`, `profiling/q2.json`, etc.
 
+### Multiple Runs for Benchmarking
+
+Run queries multiple times and get average timings:
+
+```bash
+# Run each query 10 times and show averages
+./target/release/calhacks --run --runs 10 --output-dir results/benchmark
+```
+
+This will show:
+- Individual query averages
+- Min/max times for each query
+- Overall average time
+
 ### Compare Results
 
 Compare results against a baseline:
@@ -108,6 +194,7 @@ If you have a pre-built database, load it directly:
 | `--load-db FILE` | Load existing database instead of CSV | None |
 | `--baseline-dir DIR` | Compare results against baseline | None |
 | `--profile` | Enable EXPLAIN ANALYZE profiling | False |
+| `--runs N` | Number of times to run each query (for averaging) | 1 |
 
 ## Data Format
 
@@ -146,49 +233,7 @@ The loader automatically:
 - **BIGINT**: `user_id` uses 8 bytes
 - **Result**: ~450MB saved on 15M row dataset
 
-### Index Strategy
-
-Only low-cardinality columns are indexed:
-- `type` (4 values)
-- `country` (12 values)
-- `day`, `week`, `hour` (low cardinality)
-- `advertiser_id` (1,654 values)
-- `publisher_id` (1,114 values)
-
-**Excluded** from indexing:
-- `ts` (115M unique - would be 2.2GB)
-- `auction_id` (160M unique - would be 3.1GB)
-- `user_id` (1M unique - 19MB)
-- `minute` (525K unique - 10MB)
-- `bid_price`, `total_price` (high cardinality)
-
-### Rollup Tables
-
-46 pre-computed rollup tables for common patterns:
-- `day_type_rollups` - pre-aggregates by day + type
-- `advertiser_type_rollups` - pre-aggregates by advertiser + type
-- `type_country_rollups` - pre-aggregates by type + country
-- etc.
-
-Each rollup includes: `COUNT(*)`, `SUM(bid_price)`, `SUM(total_price)`, `AVG(bid_price)`, `AVG(total_price)`, `MIN/MAX` for both prices.
-
-## Configuration
-
-Edit `src/preprocessor.rs` to configure:
-
-```rust
-// Enable/disable index and rollup creation
-const ENABLE_INDEX_CREATION: bool = true;
-
-// Which columns to index (only low-cardinality)
-let columns = vec![
-    "week", "day", "hour", 
-    "type", "advertiser_id", "publisher_id",
-    "country"
-];
-```
-
-## Expected Performance
+### Expected Performance
 
 On a 15M row dataset with optimized schema:
 
@@ -206,6 +251,41 @@ On a 15M row dataset with optimized schema:
 - PERFECT_HASH_GROUP_BY for fast aggregations
 - Sequential scans instead of slow CSV parsing
 
+## Building
+
+### Prerequisites
+
+- **Rust**: Install via `brew install rust` or `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **Cargo**: Comes with Rust
+
+### Build for Mac
+
+```bash
+# Build release binary (optimized)
+cargo build --release
+
+# The binary will be at: ./target/release/calhacks
+```
+
+### Using Nix Flake (Optional)
+
+For reproducible development environment with all dependencies:
+
+```bash
+# Enter the development shell with Rust, DuckDB, and all tools
+nix develop
+
+# Then build
+cargo build --release
+```
+
+Or with `direnv` (one-time setup):
+
+```bash
+direnv allow
+cargo build --release
+```
+
 ## Troubleshooting
 
 ### "Table events_table does not exist"
@@ -215,16 +295,42 @@ If loading a pre-built database, ensure `events_table` exists. If it doesn't, th
 ### Memory Errors
 
 If running out of memory:
-1. Set `ENABLE_INDEX_CREATION = false` in `src/preprocessor.rs`
-2. Use smaller dataset (`data/data-small`)
-3. Reduce number of rollup tables
+1. Use smaller dataset (`--input-dir data/data-small`)
+2. Reduce number of runs (`--runs 1`)
 
-### Slow Performance on Large Datasets
+### Mac-Specific Issues
 
-For datasets > 50M rows:
-- Disable rollup tables (they can be large)
-- Only create indexes on filter columns
-- Consider partitioning by date
+**Inspecting dynamic dependencies:**
+```bash
+# Check what libraries the binary needs
+otool -L ./target/release/calhacks
+
+# You should see libduckdb.dylib listed
+```
+
+**DuckDB linking issues:**
+If you get errors about missing DuckDB libraries:
+```bash
+# Install DuckDB via Homebrew
+brew install duckdb
+
+# The binary will look for libduckdb.dylib in:
+# - /opt/homebrew/lib (Apple Silicon Mac)
+# - /usr/local/lib (Intel Mac)
+```
+
+**Libraries that need to be in PATH:**
+- `libduckdb.dylib` - Core DuckDB library (from `brew install duckdb`)
+- Standard system libraries (automatically found)
+
+**Binary size:**
+The release binary is optimized for size and performance. On Mac it should be ~10-15MB after stripping.
+
+**Checking if all dependencies are found:**
+```bash
+# Run this to see if libraries are missing
+DYLD_PRINT_LIBRARIES=1 ./target/release/calhacks --version 2>&1 | grep "library not loaded"
+```
 
 ## Files
 
@@ -238,4 +344,3 @@ For datasets > 50M rows:
 ## License
 
 MIT
-

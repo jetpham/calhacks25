@@ -2,7 +2,7 @@ use duckdb::Connection;
 use std::path::PathBuf;
 use anyhow::Result;
 
-const MATERIALIZED_TABLE: &str = "events_table";
+pub const MATERIALIZED_TABLE: &str = "events_table";
 
 /// Load data from CSV files into DuckDB as a table (not a view)
 /// This loads all data into memory for fast query execution
@@ -68,10 +68,10 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf) -> Result<()> {
                 )
                 SELECT
                   ts,
-                  DATE_TRUNC('week', ts)              AS week,
-                  DATE(ts)                            AS day,
-                  DATE_TRUNC('hour', ts)              AS hour,
-                  STRFTIME(ts, '%Y-%m-%d %H:%M')      AS minute,
+                  CAST(DATE_TRUNC('week', ts) AS VARCHAR)    AS week,
+                  CAST(DATE(ts) AS VARCHAR)                  AS day,
+                  CAST(DATE_TRUNC('hour', ts) AS VARCHAR)    AS hour,
+                  STRFTIME(ts, '%Y-%m-%d %H:%M')             AS minute,
                   type,
                   auction_id,
                   advertiser_id,
@@ -103,10 +103,4 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Open a database connection with configuration
-pub fn open_database(db_path: &PathBuf) -> Result<Connection> {
-    let con = Connection::open(db_path)?;
-    // con.execute("SET memory_limit = '16GB'", [])?;
-    // con.execute("SET threads = 8", [])?;
-    Ok(con)
-}
+// open_database function removed - using in-memory connection directly in main.rs

@@ -22,6 +22,7 @@
           buildInputs = [
             (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
               extensions = [ "rust-src" ];
+              targets = [ "aarch64-apple-darwin" ];
             }))
             mold
             clang
@@ -42,6 +43,7 @@
             pkg-config
             openssl
             openssl.dev
+            zig
           ];
           
           shellHook = ''
