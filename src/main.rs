@@ -8,8 +8,9 @@ mod data_loader;
 mod query_executor;
 mod query_parser;
 mod sql_assembler;
+mod profiler;
 
-use data_loader::{load_data, load_database_from_file, save_database_to_file};
+use data_loader::{load_data, load_database_from_file};
 use query_executor::{run_queries, write_results_to_csv};
 use query_parser::parse_queries_from_file;
 
@@ -41,6 +42,7 @@ struct Args {
     #[arg(
         long,
         value_name = "FILE",
+        default_value = "duck.db",
         conflicts_with = "load_db"
     )]
     save_db: Option<PathBuf>,
@@ -97,20 +99,24 @@ fn main() -> Result<()> {
     let total_start = Instant::now();
     let args = Args::parse();
 
-    // Step 2: Load database from file or from CSVs
+    // Step 2: Load database from file or create persistent database
     let con = if let Some(db_path) = &args.load_db {
         // Load database from file
         load_database_from_file(db_path)?
     } else {
-        // Create new in-memory database and load data from CSVs
-        let con = Connection::open(":memory:")?;
-        load_data(&con, &args.input_dir)?;
-
-        // Save database to file if requested
-        if let Some(save_path) = &args.save_db {
-            save_database_to_file(&con, save_path)?;
+        // Create persistent database file and load data from CSVs
+        let db_path = args.save_db.unwrap(); // Should never be None due to default_value
+        
+        // Remove existing database file if it exists to avoid serialization errors
+        if db_path.exists() {
+            std::fs::remove_file(&db_path)?;
+            println!("Removed existing database file: {:?}", db_path);
         }
-
+        
+        let con = Connection::open(&db_path)?;
+        load_data(&con, &args.input_dir, &db_path)?;
+        
+        println!("Persistent database created at: {:?}", db_path);
         con
     };
     // Step 1: Parse queries from JSON file

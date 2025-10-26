@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use std::fs;
 use crate::sql_assembler::assemble_sql;
+use crate::profiler::{ProfilingConfig, ProfilingMode, setup_profiling, execute_with_profiling, generate_profiling_report, generate_query_graph};
 
 /// Query result structure
 #[derive(Debug)]
@@ -14,17 +15,35 @@ pub struct QueryResult {
     pub rows: Vec<Vec<String>>,
 }
 
-/// Execute queries and return results with precise timing
+/// Execute queries and return results with comprehensive profiling
 pub fn run_queries(con: &Connection, queries: &[Value]) -> Result<Vec<QueryResult>> {
     let mut query_results = Vec::new();
+    let mut profiling_results = Vec::new();
     let benchmark_start = Instant::now();
+    
+    // Setup profiling for query execution
+    let profiling_config = ProfilingConfig {
+        mode: ProfilingMode::Both,
+        output_dir: PathBuf::from("profiling"),
+        enable_detailed: true,
+        enable_optimizer_metrics: true,
+        enable_planner_metrics: true,
+        enable_physical_planner_metrics: true,
+    };
+    
+    setup_profiling(con, &profiling_config)?;
     
     for (i, q) in queries.iter().enumerate() {
         let sql = assemble_sql(q);
+        let query_name = format!("Query {}", i + 1);
         
-        let query_start = Instant::now();
+        println!("Executing {}...", query_name);
         
-        // Execute query and get results using prepared statement
+        // Execute query with profiling
+        let profiling_result = execute_with_profiling(con, &sql, &query_name, &profiling_config)?;
+        profiling_results.push(profiling_result);
+        
+        // Also get the actual results for output
         let mut stmt = con.prepare(&sql)?;
         let mut rows = stmt.query([])?;
         
@@ -63,8 +82,9 @@ pub fn run_queries(con: &Connection, queries: &[Value]) -> Result<Vec<QueryResul
             all_rows.push(row_data);
         }
         
-        let query_duration = query_start.elapsed();
-        println!("Query {}: {:.3}s", i + 1, query_duration.as_secs_f64());
+        println!("{} completed: {:.3}s (CPU: {:.3}s, Rows: {})", 
+                query_name, profiling_results[i].total_time, 
+                profiling_results[i].cpu_time, profiling_results[i].rows_returned);
 
         // Store result in memory
         query_results.push(QueryResult {
@@ -76,6 +96,15 @@ pub fn run_queries(con: &Connection, queries: &[Value]) -> Result<Vec<QueryResul
     
     let total_benchmark_time = benchmark_start.elapsed();
     println!("Total benchmark time: {:.3}s", total_benchmark_time.as_secs_f64());
+    
+    // Generate profiling report
+    generate_profiling_report(&profiling_results, &profiling_config.output_dir)?;
+    
+    // Generate query graph if requested
+    if matches!(profiling_config.mode, ProfilingMode::QueryGraph | ProfilingMode::Both) {
+        let profile_file = profiling_config.output_dir.join("query_profile.json");
+        generate_query_graph(&profile_file, &profiling_config.output_dir)?;
+    }
 
     Ok(query_results)
 }

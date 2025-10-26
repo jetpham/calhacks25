@@ -1,0 +1,94 @@
+{
+    "rows_returned": 1440,
+    "latency": 0.518340343,
+    "result_set_size": 34560,
+    "query_name": "SELECT minute, SUM(bid_price) FROM events WHERE type = 'impression' AND day = '2024-06-01' GROUP BY minute ORDER BY minute ASC",
+    "blocked_thread_time": 0.0,
+    "system_peak_buffer_memory": 80394881024,
+    "system_peak_temp_dir_size": 13040713728,
+    "cpu_time": 12.132734203,
+    "extra_info": {},
+    "cumulative_cardinality": 442898,
+    "cumulative_rows_scanned": 5880000000,
+    "children": [
+        {
+            "result_set_size": 34560,
+            "operator_name": "ORDER_BY",
+            "cpu_time": 12.132734203,
+            "extra_info": {
+                "Order By": "memory.main.events.\"minute\" ASC"
+            },
+            "cumulative_cardinality": 442898,
+            "operator_type": "ORDER_BY",
+            "operator_cardinality": 1440,
+            "cumulative_rows_scanned": 5880000000,
+            "operator_rows_scanned": 0,
+            "operator_timing": 0.037644318,
+            "children": [
+                {
+                    "result_set_size": 34560,
+                    "operator_name": "HASH_GROUP_BY",
+                    "cpu_time": 12.095089885,
+                    "extra_info": {
+                        "Groups": "#0",
+                        "Aggregates": "sum(#1)",
+                        "Estimated Cardinality": "351448"
+                    },
+                    "cumulative_cardinality": 441458,
+                    "operator_type": "HASH_GROUP_BY",
+                    "operator_cardinality": 1440,
+                    "cumulative_rows_scanned": 5880000000,
+                    "operator_rows_scanned": 0,
+                    "operator_timing": 0.4408317229999998,
+                    "children": [
+                        {
+                            "result_set_size": 5280216,
+                            "operator_name": "PROJECTION",
+                            "cpu_time": 11.654258162,
+                            "extra_info": {
+                                "Projections": [
+                                    "minute",
+                                    "bid_price"
+                                ],
+                                "Estimated Cardinality": "606436"
+                            },
+                            "cumulative_cardinality": 440018,
+                            "operator_type": "PROJECTION",
+                            "operator_cardinality": 220009,
+                            "cumulative_rows_scanned": 5880000000,
+                            "operator_rows_scanned": 0,
+                            "operator_timing": 0.07537368800000001,
+                            "children": [
+                                {
+                                    "result_set_size": 5280216,
+                                    "operator_name": "SEQ_SCAN ",
+                                    "cpu_time": 11.578884473999999,
+                                    "extra_info": {
+                                        "Table": "events",
+                                        "Type": "Sequential Scan",
+                                        "Projections": [
+                                            "minute",
+                                            "bid_price"
+                                        ],
+                                        "Filters": [
+                                            "type='impression'",
+                                            "day='2024-06-01'::DATE"
+                                        ],
+                                        "Estimated Cardinality": "606436"
+                                    },
+                                    "cumulative_cardinality": 220009,
+                                    "operator_type": "TABLE_SCAN",
+                                    "operator_cardinality": 220009,
+                                    "cumulative_rows_scanned": 5880000000,
+                                    "operator_rows_scanned": 5880000000,
+                                    "operator_timing": 11.578884473999999,
+                                    "children": []
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

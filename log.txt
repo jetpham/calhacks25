@@ -1,0 +1,4 @@
+DuckDB configuration: 0.001s
+File discovery: 0.000s (found 3 files)
+Table creation & data loading: 8.008s
+Creating 92 indexes in parallel with fallback queue...
