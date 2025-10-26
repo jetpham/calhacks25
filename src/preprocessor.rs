@@ -4,6 +4,9 @@ use rand::Rng;
 use std::io::{self, Write};
 use std::time::Duration;
 use std::thread;
+use std::path::PathBuf;
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use rayon::prelude::*;
 
 use crate::data_loader::MATERIALIZED_TABLE;
 
@@ -45,6 +48,38 @@ fn execute_with_retry(con: &Connection, sql: &str, description: &str) -> Result<
             }
         }
     }
+}
+
+/// Generate all index combinations for parallel processing
+fn generate_index_combinations(columns: &[&str]) -> Vec<(String, String)> {
+    let mut combinations = Vec::new();
+    
+    // Single column indexes
+    for col in columns {
+        combinations.push((col.to_string(), col.to_string()));
+    }
+    
+    // Two-column combinations
+    for i in 0..columns.len() {
+        for j in (i+1)..columns.len() {
+            let cols = format!("{}, {}", columns[i], columns[j]);
+            let name = format!("{}_{}", columns[i], columns[j]);
+            combinations.push((name, cols));
+        }
+    }
+    
+    // Three-column combinations
+    for i in 0..columns.len() {
+        for j in (i+1)..columns.len() {
+            for k in (j+1)..columns.len() {
+                let cols = format!("{}, {}, {}", columns[i], columns[j], columns[k]);
+                let name = format!("{}_{}_{}", columns[i], columns[j], columns[k]);
+                combinations.push((name, cols));
+            }
+        }
+    }
+    
+    combinations
 }
 
 fn build_index_batch() -> TaskBatch {
@@ -213,7 +248,9 @@ pub fn preprocess(con: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn create_indexes_on_all_columns(con: &Connection) -> Result<()> {
+    // Fallback to sequential execution if no db_path
     let index_batch = build_index_batch();
     execute_batch(con, &index_batch);
     
@@ -221,6 +258,70 @@ pub fn create_indexes_on_all_columns(con: &Connection) -> Result<()> {
     let _ = con.execute(&format!("ANALYZE {}", MATERIALIZED_TABLE), []);
     
     Ok(())
+}
+
+pub fn create_indexes_concurrent_file(db_path: &PathBuf) -> Result<()> {
+    let total_start = std::time::Instant::now();
+    
+    // Define all columns for indexing
+    let columns = vec![
+        "week", "day", "hour", "minute", 
+        "type", "advertiser_id", "publisher_id",
+        "country", "user_id"
+    ];
+    
+    // Generate all index combinations for parallel processing
+    let index_combinations = generate_index_combinations(&columns);
+    let total_indexes = index_combinations.len();
+    
+    println!("Creating {} indexes in parallel...", total_indexes);
+    
+    let success_counter = Arc::new(AtomicUsize::new(0));
+    let db_path = db_path.clone();
+    
+    index_combinations
+        .par_iter()
+        .for_each(|(name, cols)| {
+            let sql = format!("CREATE INDEX IF NOT EXISTS idx_{}_{} ON {}({})", 
+                MATERIALIZED_TABLE, name, MATERIALIZED_TABLE, cols);
+            
+            loop {
+                match Connection::open(&db_path) {
+                    Ok(thread_con) => {
+                        match thread_con.execute(&sql, []) {
+                            Ok(_) => {
+                                let current_count = success_counter.fetch_add(1, Ordering::Relaxed);
+                                println!("Created index {}/{}: {}", current_count + 1, total_indexes, name);
+                                return;
+                            },
+                            Err(e) => {
+                                println!("Error creating index {}: {} - retrying...", name, e);
+                                continue;
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        println!("Connection error for index {}: {} - retrying...", name, e);
+                        continue;
+                    }
+                }
+            }
+        });
+    
+    let final_success = success_counter.load(Ordering::Relaxed);
+    println!("All {} indexes created successfully!", final_success);
+    
+    let total_time = total_start.elapsed();
+    println!("Index creation complete: {:.3}s", total_time.as_secs_f64());
+    
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn create_indexes_concurrent_imemory(_db_name: &str) -> Result<()> {
+    // DEPRECATED: In-memory concurrent indexing causes segfaults
+    // Use create_indexes_concurrent_file instead
+    panic!("In-memory concurrent indexing is not safe. Use create_indexes_concurrent_file instead.");
 }
 
 pub fn create_rollup_tables(con: &Connection) -> Result<()> {

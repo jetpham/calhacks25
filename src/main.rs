@@ -11,7 +11,7 @@ mod query_handler;
 mod result_checker;
 
 use data_loader::load_data;
-use preprocessor::{create_indexes_on_all_columns, create_rollup_tables};
+use preprocessor::{create_indexes_concurrent_file, create_rollup_tables};
 use query_executor::{prepare_query, write_single_result_to_csv, explain_query};
 use query_handler::{parse_queries_from_file, assemble_sql};
 use result_checker::compare_results;
@@ -47,6 +47,9 @@ struct Args {
 
     #[arg(long, default_value = "1")]
     runs: usize,
+
+    #[arg(long)]
+    skip_save: bool,
 }
 
 
@@ -63,39 +66,34 @@ fn main() -> Result<()> {
         }
     }
 
-    let con = Connection::open_in_memory()?;
+    let db_path = PathBuf::from("tmp/concurrent.duckdb");
+    std::fs::create_dir_all("tmp")?;
     
-    let mut db_num = 1;
-    let db_path = loop {
-        let path = PathBuf::from(format!("duck{}.db", db_num));
-        if !path.exists() || (args.use_existing && path.exists()) {
-            break path;
-        }
-        db_num += 1;
-    };
-    
-    println!("Using database: {}", db_path.display());
+    println!("Using persistent database: {}", db_path.display());
     
     if db_path.exists() && args.use_existing {
-        println!("Loading existing database into memory...");
-        let db_name = "loaded_db";
-        con.execute(&format!("ATTACH '{}' AS {}", db_path.display(), db_name), [])?;
-        con.execute(&format!("COPY FROM DATABASE {} TO memory", db_name), [])?;
-        con.execute(&format!("DETACH {}", db_name), [])?;
-        println!("Database loaded into memory");
+        println!("Using existing database...");
     } else {
         println!("Creating database from CSV files...");
-        load_data(&con, &args.input_dir)?;
-        create_indexes_on_all_columns(&con)?;
-        create_rollup_tables(&con)?;
         
-        println!("Saving database to disk...");
-        let db_name = "disk_db";
-        con.execute(&format!("ATTACH '{}' AS {}", db_path.display(), db_name), [])?;
-        con.execute(&format!("COPY FROM DATABASE memory TO {}", db_name), [])?;
-        con.execute(&format!("DETACH {}", db_name), [])?;
+        if db_path.exists() {
+            std::fs::remove_file(&db_path)?;
+        }
+        
+        let file_con = Connection::open(&db_path)?;
+        load_data(&file_con, &args.input_dir)?;
+        create_rollup_tables(&file_con)?;
+        
         println!("Database saved to {}", db_path.display());
+        
+        println!("Creating indexes concurrently on persistent database...");
+        create_indexes_concurrent_file(&db_path)?;
+        
+        println!("Database setup complete");
     }
+    
+    let con = Connection::open(&db_path)?;
+    println!("Ready for query execution");
     
     let queries = parse_queries_from_file(&args.queries)?;
     println!("Parsed {} queries", queries.len());

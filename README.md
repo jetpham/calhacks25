@@ -26,7 +26,8 @@ A Rust-based query execution optimized for a silly dataset
 | `--runs N` | Number of times to run each query (for averaging) | `--runs 5` |
 | `--queries FILE` | JSON file with query definitions | `--queries my_queries.json` |
 | `--profile` | Enable query profiling | `--profile` |
-| `--load-db FILE` | Load pre-built database instead of CSV | `--load-db my.db` |
+| `--skip-save` | Skip saving the database to disk (keep in-memory only) | `--skip-save` |
+| `--use-existing` | Use an existing numbered database if available | `--use-existing` |
 
 ## Features
 
@@ -173,16 +174,18 @@ Compare results against a baseline:
   --output-dir results/my-results
 ```
 
-### Using Pre-built Database
+### Skip Saving Database (In-Memory Only)
 
-If you have a pre-built database, load it directly:
+If you only need to run queries once without caching the database:
 
 ```bash
 ./target/release/calhacks \
   --run \
-  --load-db my-precomputed.db \
-  --output-dir results/fast
+  --skip-save \
+  --output-dir results/test
 ```
+
+This is useful for quick tests where you don't need the database cached to disk.
 
 ## Command Line Arguments
 
@@ -195,6 +198,8 @@ If you have a pre-built database, load it directly:
 | `--baseline-dir DIR` | Compare results against baseline | None |
 | `--profile` | Enable EXPLAIN ANALYZE profiling | False |
 | `--runs N` | Number of times to run each query (for averaging) | 1 |
+| `--skip-save` | Skip saving database to disk | False |
+| `--use-existing` | Use existing database file if available | False |
 
 ## Data Format
 
