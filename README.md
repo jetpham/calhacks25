@@ -1,7 +1,7 @@
 # CalHacks Database Query Optimizer
 
 A Rust-based query execution optimized for a silly dataset
-> built on DuckDB 
+> built on DuckDB
 
 ## Quick Start
 
@@ -39,7 +39,7 @@ A Rust-based query execution optimized for a silly dataset
 
 ## Architecture
 
-```
+```text
 ┌─────────────────┐
 │   CSV Files     │
 │  (read_csv)     │
@@ -68,7 +68,7 @@ A Rust-based query execution optimized for a silly dataset
 
 ## Building on Mac (M2)
 
-**Recommended: Build natively on the Mac**
+### Recommended: Build natively on the Mac
 
 Cross-compiling with DuckDB's dynamic library from Linux is complex. Build directly on the Mac:
 
@@ -114,6 +114,7 @@ ldd ./target/release/calhacks
 ```
 
 **DuckDB dependency**: The binary requires DuckDB to be installed on the Mac. Install it with:
+
 ```bash
 brew install duckdb
 ```
@@ -159,6 +160,7 @@ Run queries multiple times and get average timings:
 ```
 
 This will show:
+
 - Individual query averages
 - Min/max times for each query
 - Overall average time
@@ -187,7 +189,7 @@ If you only need to run queries once without caching the database:
 
 This is useful for quick tests where you don't need the database cached to disk.
 
-## Command Line Arguments
+## Command Line Arguments (Detailed)
 
 | Argument | Description | Default |
 |----------|-------------|---------|
@@ -211,6 +213,7 @@ ts,type,auction_id,advertiser_id,publisher_id,bid_price,user_id,total_price,coun
 ```
 
 The loader automatically:
+
 - Converts `ts` (milliseconds) to TIMESTAMP
 - Maps `auction_id` to UUID type
 - Converts IDs to USMALLINT (2 bytes)
@@ -251,6 +254,7 @@ On a 15M row dataset with optimized schema:
 | Q5 | 11.61s | 0.35s | **33x** |
 
 **Key improvements:**
+
 - Materialization eliminates READ_CSV operations
 - Optimized types reduce I/O by 60%
 - PERFECT_HASH_GROUP_BY for fast aggregations
@@ -300,12 +304,14 @@ If loading a pre-built database, ensure `events_table` exists. If it doesn't, th
 ### Memory Errors
 
 If running out of memory:
+
 1. Use smaller dataset (`--input-dir data/data-small`)
 2. Reduce number of runs (`--runs 1`)
 
 ### Mac-Specific Issues
 
 **Inspecting dynamic dependencies:**
+
 ```bash
 # Check what libraries the binary needs
 otool -L ./target/release/calhacks
@@ -314,7 +320,9 @@ otool -L ./target/release/calhacks
 ```
 
 **DuckDB linking issues:**
+
 If you get errors about missing DuckDB libraries:
+
 ```bash
 # Install DuckDB via Homebrew
 brew install duckdb
@@ -325,6 +333,7 @@ brew install duckdb
 ```
 
 **Libraries that need to be in PATH:**
+
 - `libduckdb.dylib` - Core DuckDB library (from `brew install duckdb`)
 - Standard system libraries (automatically found)
 
@@ -332,6 +341,7 @@ brew install duckdb
 The release binary is optimized for size and performance. On Mac it should be ~10-15MB after stripping.
 
 **Checking if all dependencies are found:**
+
 ```bash
 # Run this to see if libraries are missing
 DYLD_PRINT_LIBRARIES=1 ./target/release/calhacks --version 2>&1 | grep "library not loaded"
