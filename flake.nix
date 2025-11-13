@@ -23,7 +23,6 @@
             # Rust toolchain with Cranelift component
             (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
               extensions = [ "rust-src" "rustc-codegen-cranelift" ];
-              targets = [ "aarch64-apple-darwin" ];
             }))
             mold
             clang

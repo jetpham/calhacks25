@@ -9,3 +9,4 @@
 duck.db
 /profiling
 *.db
+.direnv/

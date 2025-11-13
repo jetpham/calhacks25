@@ -2,7 +2,6 @@ use std::sync::OnceLock;
 
 pub struct HardwareInfo {
     pub num_threads: usize,
-    pub total_memory_gb: f64,
     pub available_memory_gb: f64,
 }
 
@@ -13,38 +12,29 @@ impl HardwareInfo {
         let num_threads = num_cpus::get();
         
         // Try to detect memory (fallback to reasonable defaults)
-        let (total_memory_gb, available_memory_gb) = if cfg!(target_os = "linux") {
+        let available_memory_gb = if cfg!(target_os = "linux") {
             // Try to read from /proc/meminfo
             if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-                let mut total_kb = 0;
                 let mut available_kb = 0;
                 
                 for line in content.lines() {
-                    if line.starts_with("MemTotal:") {
-                        if let Some(kb_str) = line.split_whitespace().nth(1) {
-                            total_kb = kb_str.parse().unwrap_or(0);
-                        }
-                    } else if line.starts_with("MemAvailable:") {
+                    if line.starts_with("MemAvailable:") {
                         if let Some(kb_str) = line.split_whitespace().nth(1) {
                             available_kb = kb_str.parse().unwrap_or(0);
                         }
                     }
                 }
                 
-                (
-                    total_kb as f64 / 1_048_576.0, // KB to GB
-                    available_kb as f64 / 1_048_576.0,
-                )
+                available_kb as f64 / 1_048_576.0 // KB to GB
             } else {
-                (32.0, 16.0) // Fallback
+                16.0 // Fallback
             }
         } else {
-            (32.0, 16.0) // Fallback for non-Linux
+            16.0 // Fallback for non-Linux
         };
         
         Self {
             num_threads,
-            total_memory_gb,
             available_memory_gb,
         }
     }
@@ -89,17 +79,6 @@ impl HardwareInfo {
         let rollup_weight = base_rollup_weight / thread_factor; // Lower weight = rollup cheaper
         
         (scan_weight, rollup_weight)
-    }
-    
-    /// Determine if we can afford larger MVs
-    pub fn can_afford_large_mvs(&self) -> bool {
-        // Winner had 18GB, if we have significantly more, we can create more/larger MVs
-        self.available_memory_gb > 30.0
-    }
-    
-    /// Optimal number of parallel operations
-    pub fn optimal_parallelism(&self) -> usize {
-        self.num_threads
     }
 }
 
