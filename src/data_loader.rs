@@ -68,12 +68,20 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, use_parquet: bool) -> Res
     )?;
 
     let parquet_path = if use_parquet {
-        // Determine parquet file location (in data directory parent)
-        let parquet_file = data_dir.parent()
+        // Determine parquet file/directory location (in data directory parent)
+        let parquet_dir = data_dir.parent()
             .unwrap_or(data_dir)
             .join("events.parquet");
         
-        if !parquet_file.exists() {
+        // Check if it's a directory with parquet files or a single file
+        let parquet_pattern = if parquet_dir.is_dir() {
+            // Directory with multiple parquet files - use glob pattern
+            format!("{}/data_*.parquet", parquet_dir.to_string_lossy())
+        } else if parquet_dir.exists() {
+            // Single parquet file
+            parquet_dir.to_string_lossy().to_string()
+        } else {
+            // Doesn't exist - generate it
             println!("Generating Parquet files with optimized row groups (takes ~60 seconds)...");
             let start = std::time::Instant::now();
             
@@ -93,6 +101,10 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, use_parquet: bool) -> Res
             println!("Using ROW_GROUP_SIZE: {} (optimized for {} threads)", 
                      optimal_row_group_size, hw.num_threads);
             
+            // Create directory if it doesn't exist
+            std::fs::create_dir_all(&parquet_dir)?;
+            let parquet_file = parquet_dir.join("data.parquet");
+            
             con.execute(
                 &format!(
                     "COPY (SELECT * FROM events) TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD, PER_THREAD_OUTPUT, ROW_GROUP_SIZE {});",
@@ -103,20 +115,19 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, use_parquet: bool) -> Res
             )?;
             
             println!("Parquet generation complete: {:.3}s", start.elapsed().as_secs_f64());
-        } else {
-            println!("Parquet files already exist - skipping generation");
-        }
+            parquet_file.to_string_lossy().to_string()
+        };
 
         // Replace events view to read from Parquet
         con.execute(
             &format!(
                 "CREATE OR REPLACE VIEW events AS SELECT * FROM read_parquet('{}');",
-                parquet_file.to_string_lossy()
+                parquet_pattern
             ),
             [],
         )?;
 
-        Some(parquet_file)
+        Some(parquet_dir)
     } else {
         None
     };

@@ -20,9 +20,9 @@
           stdenv = stdenvAdapters.useMoldLinker clangStdenv;
         } {
           buildInputs = [
-            # Rust toolchain with Cranelift component
+            # Rust toolchain
             (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-              extensions = [ "rust-src" "rustc-codegen-cranelift" ];
+              extensions = [ "rust-src" ];
             }))
             mold
             clang
@@ -56,11 +56,8 @@
             # Disable zcache (as requested)
             export CARGO_NET_GIT_FETCH_WITH_CLI=true
             
-            # Allow nightly features (for Cranelift)
-            export RUSTC_BOOTSTRAP=1
-            
             echo "⚡ Rust compiler optimizations (configured in .cargo/config.toml):"
-            echo "  - Nightly Rust with Cranelift backend"
+            echo "  - Nightly Rust"
             echo "  - Mold linker"
             echo "  - Parallel compilation ($(nproc) jobs)"
             echo "  - zcache disabled"

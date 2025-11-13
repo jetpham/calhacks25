@@ -1,6 +1,5 @@
 [target.'cfg(all())']
 rustflags = [
-  "-Z", "codegen-backend=cranelift",
   "-C", "link-arg=-fuse-ld=mold",
   "-C", "target-cpu=native",
 ]
