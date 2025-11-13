@@ -1,260 +1,90 @@
 use duckdb::Connection;
 use anyhow::Result;
-use rand::Rng;
-use std::io::{self, Write};
-use std::time::Duration;
-use std::thread;
+use std::time::Instant;
 
-use crate::data_loader::MATERIALIZED_TABLE;
+use crate::mv::{create_mv_registry, MaterializedView};
 
-const MAX_RETRIES: u32 = 5;
-const BASE_DELAY_MS: u64 = 100;
-
-#[derive(Clone)]
-struct SqlTask {
-    sql: String,
-    description: String,
-}
-
-struct TaskBatch {
-    tasks: Vec<SqlTask>,
-    description: String,
-}
-
-fn execute_with_retry(con: &Connection, sql: &str, description: &str) -> Result<()> {
-    let mut retry_count = 0;
-    let mut delay = BASE_DELAY_MS;
+pub fn create_materialized_views(con: &Connection) -> Result<Vec<MaterializedView>> {
+    let total_start = Instant::now();
+    let mvs = create_mv_registry();
     
-    loop {
-        match con.execute(sql, []) {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                retry_count += 1;
-                if retry_count >= MAX_RETRIES {
-                    eprintln!("Warning: Failed to {} after {} retries: {}", description, MAX_RETRIES, e);
-                    return Ok(());
-                }
-                
-                let jitter = rand::thread_rng().gen_range(0..=50);
-                let total_delay = delay + jitter;
-                eprintln!("Warning: {} failed (attempt {}/{}): {}. Retrying in {}ms...", 
-                    description, retry_count, MAX_RETRIES, e, total_delay);
-                
-                thread::sleep(Duration::from_millis(total_delay));
-                delay *= 2;
-            }
-        }
-    }
-}
-
-/// Generate all index combinations for parallel processing
-fn generate_index_combinations(columns: &[&str]) -> Vec<(String, String)> {
-    let mut combinations = Vec::new();
+    println!("Creating {} materialized views...", mvs.len());
     
-    // Single column indexes
-    for col in columns {
-        combinations.push((col.to_string(), col.to_string()));
-    }
-    
-    // Two-column combinations
-    for i in 0..columns.len() {
-        for j in (i+1)..columns.len() {
-            let cols = format!("{}, {}", columns[i], columns[j]);
-            let name = format!("{}_{}", columns[i], columns[j]);
-            combinations.push((name, cols));
-        }
-    }
-    
-    
-    combinations
-}
-
-fn build_index_batch() -> TaskBatch {
-    let columns = vec![
-        "week", "day", "hour", "minute", 
-        "type", "advertiser_id", "publisher_id",
-        "country", "user_id"
-    ];
-    
-    let mut tasks = Vec::new();
-    let index_combinations = generate_index_combinations(&columns);
-    let total_indexes = index_combinations.len();
-    
-    for (name, cols) in index_combinations {
-        let index_name = format!("idx_{}_{}", MATERIALIZED_TABLE, name);
-        let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}({})", index_name, MATERIALIZED_TABLE, cols);
-        tasks.push(SqlTask {
-            sql,
-            description: format!("create index {}", name),
-        });
-    }
-    
-    TaskBatch {
-        tasks,
-        description: format!("Creating {} indexes...", total_indexes),
-    }
-}
-
-fn build_rollup_batch() -> TaskBatch {
-    let rollups = vec![
-        ("advertiser_country_rollups", "advertiser_id, country"),
-        ("advertiser_publisher_rollups", "advertiser_id, publisher_id"),
-        ("advertiser_type_country_rollups", "advertiser_id, type, country"),
-        ("advertiser_type_publisher_rollups", "advertiser_id, type, publisher_id"),
-        ("advertiser_type_rollups", "advertiser_id, type"),
-        ("day_advertiser_country_rollups", "day, advertiser_id, country"),
-        ("day_advertiser_rollups", "day, advertiser_id"),
-        ("day_advertiser_type_rollups", "day, advertiser_id, type"),
-        ("day_country_rollups", "day, country"),
-        ("day_publisher_country_rollups", "day, publisher_id, country"),
-        ("day_publisher_rollups", "day, publisher_id"),
-        ("day_type_country_rollups", "day, type, country"),
-        ("day_type_publisher_country_rollups", "day, type, publisher_id, country"),
-        ("day_type_publisher_rollups", "day, type, publisher_id"),
-        ("day_type_rollups", "day, type"),
-        ("hour_country_rollups", "hour, country"),
-        ("hour_day_rollups", "hour, day"),
-        ("hour_type_country_rollups", "hour, type, country"),
-        ("hour_type_rollups", "hour, type"),
-        ("minute_country_rollups", "minute, country"),
-        ("minute_type_rollups", "minute, type"),
-        ("publisher_country_rollups", "publisher_id, country"),
-        ("type_country_rollups", "type, country"),
-        ("type_publisher_country_rollups", "type, publisher_id, country"),
-        ("type_publisher_rollups", "type, publisher_id"),
-        ("type_rollups", "type"),
-        ("week_advertiser_country_rollups", "week, advertiser_id, country"),
-        ("week_advertiser_rollups", "week, advertiser_id"),
-        ("week_advertiser_type_country_rollups", "week, advertiser_id, type, country"),
-        ("week_advertiser_type_rollups", "week, advertiser_id, type"),
-        ("week_country_rollups", "week, country"),
-        ("week_day_country_rollups", "week, day, country"),
-        ("week_day_rollups", "week, day"),
-        ("week_day_type_country_rollups", "week, day, type, country"),
-        ("week_day_type_rollups", "week, day, type"),
-        ("week_hour_country_rollups", "week, hour, country"),
-        ("week_hour_rollups", "week, hour"),
-        ("week_hour_type_country_rollups", "week, hour, type, country"),
-        ("week_hour_type_rollups", "week, hour, type"),
-        ("week_publisher_country_rollups", "week, publisher_id, country"),
-        ("week_publisher_rollups", "week, publisher_id"),
-        ("week_type_country_rollups", "week, type, country"),
-        ("week_type_publisher_country_rollups", "week, type, publisher_id, country"),
-        ("week_type_publisher_rollups", "week, type, publisher_id"),
-        ("week_type_rollups", "week, type"),
-    ];
-    
-    let aggregations = vec![
-        "COUNT(*) as count",
-        "SUM(bid_price) as sum_bid_price",
-        "SUM(total_price) as sum_total_price",
-        "AVG(bid_price) as avg_bid_price",
-        "AVG(total_price) as avg_total_price",
-        "MIN(bid_price) as min_bid_price",
-        "MAX(bid_price) as max_bid_price",
-        "MIN(total_price) as min_total_price",
-        "MAX(total_price) as max_total_price"
-    ];
-    
-    let agg_str = aggregations.join(", ");
-    
-    let mut tasks = Vec::new();
-    for (table_name, group_cols) in rollups {
-        let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} AS SELECT {}, {} FROM {} GROUP BY {}",
-            table_name, group_cols, agg_str, MATERIALIZED_TABLE, group_cols
-        );
-        tasks.push(SqlTask {
-            sql,
-            description: format!("create rollup table {}", table_name),
-        });
-    }
-    
-    let total = tasks.len();
-    TaskBatch {
-        tasks,
-        description: format!("Creating {} rollup tables...", total),
-    }
-}
-
-fn execute_batch(con: &Connection, batch: &TaskBatch) {
-    let total = batch.tasks.len();
-    println!("{}", batch.description);
-    
-    let mut success = 0;
-    
-    for (i, task) in batch.tasks.iter().enumerate() {
-        print!("  [{}/{}] {}...", i + 1, total, task.description);
-        io::stdout().flush().unwrap();
+    for mv in &mvs {
+        let start = Instant::now();
+        println!("Creating materialized view {} (takes ~10-60 seconds)", mv.name);
         
-        let result = execute_with_retry(con, &task.sql, &task.description);
+        let sql = mv.generate_create_sql();
+        con.execute(&sql, [])?;
         
-        match result {
-            Ok(_) => {
-                println!(" OK");
-                success += 1;
-            }
-            Err(e) => {
-                println!(" FAILED after retries: {}", e);
-            }
-        }
+        println!("🟩 {} created in {:.3}s", mv.name, start.elapsed().as_secs_f64());
     }
     
-    println!("{} / {} tasks completed successfully", success, total);
+    println!("Materialized views creation complete: {:.3}s", total_start.elapsed().as_secs_f64());
+    
+    Ok(mvs)
 }
 
-#[allow(dead_code)]
-pub fn preprocess(con: &Connection) -> Result<()> {
-    println!("Starting preprocessing...");
-    
-    let index_batch = build_index_batch();
-    let rollup_batch = build_rollup_batch();
-    
-    execute_batch(con, &index_batch);
-    
-    println!("Updating table statistics...");
-    let _ = con.execute(&format!("ANALYZE {}", MATERIALIZED_TABLE), []);
-    
-    execute_batch(con, &rollup_batch);
-    
-    println!("Preprocessing complete");
+pub fn compute_mv_stats(con: &Connection, mvs: &mut [MaterializedView]) -> Result<()> {
+    for mv in mvs.iter_mut() {
+        let start = Instant::now();
+        println!("Computing stats for {} (takes ~10-60 seconds)", mv.name);
+        
+        // We need to compute stats, but Planner::compute_mv_stats needs mutable access
+        // For now, we'll compute stats directly here
+        let mut selects = vec!["COUNT(*)".to_string()];
+        for col in &mv.group_by {
+            selects.push(format!("COUNT(DISTINCT {})", col));
+        }
+        
+        let sql = format!("SELECT {} FROM {}", selects.join(", "), mv.name);
+        let mut stmt = con.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        
+        if let Some(row) = rows.next()? {
+            mv.num_rows = Some(row.get::<_, i64>(0)?);
+            for (i, col) in mv.group_by.iter().enumerate() {
+                mv.num_distinct.insert(col.clone(), row.get::<_, i64>(i + 1)?);
+            }
+        }
+
+        // Compute top-k for each column
+        for col in &mv.group_by {
+            // Cast ENUM types to VARCHAR for compatibility with Rust bindings
+            let sql = format!(
+                "SELECT CAST({} AS VARCHAR) as {}, COUNT(*) as cnt FROM {} GROUP BY {} ORDER BY cnt DESC LIMIT 10",
+                col, col, mv.name, col
+            );
+            let mut stmt = con.prepare(&sql)?;
+            let mut rows = stmt.query([])?;
+            
+            let mut topk = std::collections::HashMap::new();
+            while let Some(row) = rows.next()? {
+                let value: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                topk.insert(value, count);
+            }
+            mv.col_to_topk.insert(col.clone(), topk);
+        }
+        
+        println!("🟩 {} stats computed in {:.3}s", mv.name, start.elapsed().as_secs_f64());
+    }
     
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn create_indexes_on_all_columns(con: &Connection) -> Result<()> {
-    // Fallback to sequential execution if no db_path
-    let index_batch = build_index_batch();
-    execute_batch(con, &index_batch);
+pub fn warmup_cache(con: &Connection, mvs: &[MaterializedView]) -> Result<()> {
+    println!("Warming up cache...");
     
-    println!("Updating table statistics...");
-    let _ = con.execute(&format!("ANALYZE {}", MATERIALIZED_TABLE), []);
-    
-    Ok(())
-}
-
-pub fn create_indexes(con: &Connection) -> Result<()> {
-    let total_start = std::time::Instant::now();
-    let index_batch = build_index_batch();
-    execute_batch(con, &index_batch);
-    
-    println!("Updating table statistics...");
-    let _ = con.execute(&format!("ANALYZE {}", MATERIALIZED_TABLE), []);
-    
-    println!("Index creation complete: {:.3}s", total_start.elapsed().as_secs_f64());
-    
-    Ok(())
-}
-
-
-
-pub fn create_rollup_tables(con: &Connection) -> Result<()> {
-    let total_start = std::time::Instant::now();
-    let rollup_batch = build_rollup_batch();
-    execute_batch(con, &rollup_batch);
-    
-    println!("Rollup tables creation complete: {:.3}s", total_start.elapsed().as_secs_f64());
+    for mv in mvs {
+        let start = Instant::now();
+        println!("Analyzing {} (takes ~10-60 seconds)", mv.name);
+        
+        con.execute(&format!("ANALYZE {};", mv.name), [])?;
+        con.execute(&format!("SELECT COUNT(*) FROM {}", mv.name), [])?;
+        
+        println!("🟩 {} analyzed in {:.3}s", mv.name, start.elapsed().as_secs_f64());
+    }
     
     Ok(())
 }

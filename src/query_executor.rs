@@ -105,9 +105,17 @@ pub fn write_single_result_to_csv(
     
     let stmt_ref = rows.as_ref().ok_or_else(|| anyhow::anyhow!("Failed to get statement reference"))?;
     let column_count = stmt_ref.column_count();
-    let columns: Vec<String> = (0..column_count)
+    let mut columns: Vec<String> = (0..column_count)
         .map(|i| stmt_ref.column_name(i).map(|s| s.to_string()))
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    
+    // Fix column name normalization: DuckDB Rust bindings may return count(*) instead of count_star()
+    // Check if we have COUNT(*) and normalize it
+    for col in &mut columns {
+        if col == "count(*)" {
+            *col = "count_star()".to_string();
+        }
+    }
     
     wtr.write_record(&columns)?;
     

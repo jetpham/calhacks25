@@ -9,12 +9,16 @@ mod preprocessor;
 mod query_executor;
 mod query_handler;
 mod result_checker;
+mod mv;
+mod planner;
+mod hardware;
 
 use data_loader::load_data;
-use preprocessor::{create_indexes, create_rollup_tables};
+use preprocessor::{create_materialized_views, compute_mv_stats, warmup_cache};
 use query_executor::{prepare_query, write_single_result_to_csv, explain_query};
-use query_handler::{parse_queries_from_file, assemble_sql};
+use query_handler::parse_queries_from_file;
 use result_checker::compare_results;
+use planner::Planner;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -47,9 +51,6 @@ struct Args {
 
     #[arg(long, default_value = "1")]
     runs: usize,
-
-    #[arg(long)]
-    skip_save: bool,
 }
 
 fn find_next_db_filename() -> Result<PathBuf> {
@@ -125,31 +126,43 @@ fn main() -> Result<()> {
         }
         
         let file_con = Connection::open(&db_path)?;
-        load_data(&file_con, &args.input_dir)?;
-        create_rollup_tables(&file_con)?;
+        load_data(&file_con, &args.input_dir, true)?; // Use Parquet
+        
+        println!("Creating materialized views...");
+        let mut mvs = create_materialized_views(&file_con)?;
+        
+        println!("Computing statistics for materialized views...");
+        compute_mv_stats(&file_con, &mut mvs)?;
+        
+        println!("Warming up cache...");
+        warmup_cache(&file_con, &mvs)?;
         
         println!("Database saved to {}", db_path.display());
-        
-        println!("Creating indexes on persistent database...");
-        create_indexes(&file_con)?;
-        
         println!("Database setup complete");
     }
     
     let con = Connection::open(&db_path)?;
-    println!("Ready for query execution");
-    
-    let queries = parse_queries_from_file(&args.queries)?;
-    println!("Parsed {} queries", queries.len());
     
     if args.run {
         let Some(output_dir) = &args.output_dir else {
             anyhow::bail!("--output-dir required with --run");
         };
         
-        println!("Converting {} queries to SQL...", queries.len());
+        let queries = parse_queries_from_file(&args.queries)?;
+        println!("Parsed {} queries", queries.len());
+        
+        // Load MVs and stats for the planner (IF NOT EXISTS handles existing DB)
+        let mut mvs = create_materialized_views(&con)?;
+        compute_mv_stats(&con, &mut mvs)?;
+        
+        let planner = Planner::new(&con);
+        
+        println!("Planning and converting {} queries to SQL...", queries.len());
         let sql_queries: Vec<String> = queries.iter()
-            .map(|q| assemble_sql(q))
+            .map(|q| planner.translate_query(q, &mut mvs, false).unwrap_or_else(|_| {
+                // Fallback to plain SQL if planner fails
+                query_handler::assemble_sql(q)
+            }))
             .collect();
         
         println!("Preparing all statements...");
@@ -189,11 +202,7 @@ fn main() -> Result<()> {
                 
                 query_times[i].push(duration.as_secs_f64());
                 
-                if args.runs > 1 {
-                    println!("Query {} completed: {:.3}s", i + 1, duration.as_secs_f64());
-                } else {
-                    println!("Query {} completed: {:.3}s", i + 1, duration.as_secs_f64());
-                }
+                println!("Query {} completed: {:.3}s", i + 1, duration.as_secs_f64());
                 
                 total_duration += duration;
                 
