@@ -14,7 +14,7 @@ mod planner;
 mod hardware;
 
 use data_loader::load_data;
-use preprocessor::{create_materialized_views, compute_mv_stats, warmup_cache};
+use preprocessor::{create_materialized_views, compute_mv_stats, warmup_cache, create_indexes, create_type_partitioned_materialized_views, load_all_mvs_from_db};
 use query_executor::{prepare_query, write_single_result_to_csv, explain_query};
 use query_handler::parse_queries_from_file;
 use result_checker::compare_results;
@@ -134,6 +134,21 @@ fn main() -> Result<()> {
         println!("Computing statistics for materialized views...");
         compute_mv_stats(&file_con, &mut mvs)?;
         
+        println!("Creating type-partitioned materialized views...");
+        let mut partitioned_mvs = create_type_partitioned_materialized_views(&file_con, &mvs)?;
+        
+        let partitioned_count = partitioned_mvs.len();
+        
+        // Combine base and partitioned MVs
+        mvs.append(&mut partitioned_mvs);
+        
+        println!("Computing statistics for type-partitioned MVs...");
+        let total_mvs = mvs.len();
+        compute_mv_stats(&file_con, &mut mvs[total_mvs - partitioned_count..])?;
+        
+        println!("Creating indexes on materialized views...");
+        create_indexes(&file_con, &mvs)?;
+        
         println!("Warming up cache...");
         warmup_cache(&file_con, &mvs)?;
         
@@ -151,8 +166,17 @@ fn main() -> Result<()> {
         let queries = parse_queries_from_file(&args.queries)?;
         println!("Parsed {} queries", queries.len());
         
-        // Load MVs and stats for the planner (IF NOT EXISTS handles existing DB)
-        let mut mvs = create_materialized_views(&con)?;
+        // Load all MVs from database (base + type-partitioned)
+        println!("Loading materialized views from database...");
+        let mut mvs = load_all_mvs_from_db(&con)?;
+        
+        if mvs.is_empty() {
+            // Fallback: create base MVs if none exist
+            println!("No MVs found, creating base MVs...");
+            mvs = create_materialized_views(&con)?;
+        }
+        
+        println!("Computing statistics for {} MVs...", mvs.len());
         compute_mv_stats(&con, &mut mvs)?;
         
         let planner = Planner::new(&con);

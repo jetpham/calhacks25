@@ -60,11 +60,37 @@ impl MaterializedView {
             .map(|i| i.to_string())
             .collect();
 
+        // Determine optimal sort order for filtering
+        // Priority: type (most common filter), then day, then other dimensions
+        let mut order_by_cols = Vec::new();
+        if self.group_by.contains(&"type".to_string()) {
+            order_by_cols.push("type".to_string());
+        }
+        if self.group_by.contains(&"day".to_string()) {
+            order_by_cols.push("day".to_string());
+        }
+        if self.group_by.contains(&"country".to_string()) {
+            order_by_cols.push("country".to_string());
+        }
+        // Add remaining group_by columns
+        for col in &self.group_by {
+            if !order_by_cols.contains(col) {
+                order_by_cols.push(col.clone());
+            }
+        }
+
+        let order_by_clause = if !order_by_cols.is_empty() {
+            format!(" ORDER BY {}", order_by_cols.join(", "))
+        } else {
+            String::new()
+        };
+
         format!(
-            "CREATE TABLE IF NOT EXISTS {} AS\nSELECT\n{}\nFROM events\nGROUP BY {};",
+            "CREATE TABLE IF NOT EXISTS {} AS\nSELECT\n{}\nFROM events\nGROUP BY {}{};",
             self.name,
             select_parts.join(",\n"),
-            group_by_positions.join(", ")
+            group_by_positions.join(", "),
+            order_by_clause
         )
     }
 }
@@ -178,5 +204,40 @@ pub fn create_mv_registry() -> Vec<MaterializedView> {
     ));
 
     registry
+}
+
+/// Create type-partitioned versions of MVs that have 'type' in group_by
+/// This allows queries filtering by type to scan much smaller tables
+pub fn create_type_partitioned_mvs(base_mvs: &[MaterializedView]) -> Vec<MaterializedView> {
+    let mut partitioned = Vec::new();
+    let types = vec!["impression", "click", "serve", "purchase"];
+    
+    for mv in base_mvs {
+        // Only partition MVs that have 'type' in group_by and are commonly filtered
+        if mv.group_by.contains(&"type".to_string()) {
+            // Skip very small MVs (not worth partitioning)
+            if let Some(rows) = mv.num_rows {
+                if rows < 100_000 {
+                    continue; // Too small to benefit from partitioning
+                }
+            }
+            
+            // Create a partitioned MV for each type
+            for event_type in &types {
+                let partitioned_name = format!("{}_type_{}", mv.name, event_type);
+                let mut partitioned_group_by = mv.group_by.clone();
+                // Remove 'type' from group_by since it's now constant
+                partitioned_group_by.retain(|x| x != "type");
+                
+                partitioned.push(MaterializedView::new(
+                    &partitioned_name,
+                    partitioned_group_by.iter().map(|s| s.as_str()).collect(),
+                    mv.aggs.iter().cloned().collect(),
+                ));
+            }
+        }
+    }
+    
+    partitioned
 }
 

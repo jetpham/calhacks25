@@ -27,6 +27,32 @@ impl Planner {
     }
 
     pub fn is_mv_usable(&self, query: &Value, mv: &MaterializedView) -> bool {
+        // Check if this is a type-partitioned MV
+        let is_type_partitioned = mv.name.contains("_type_") && {
+            let parts: Vec<&str> = mv.name.split("_type_").collect();
+            if parts.len() == 2 {
+                let type_part = parts[1];
+                matches!(type_part, "click" | "impression" | "purchase" | "serve")
+            } else {
+                false
+            }
+        };
+        let query_type = self.extract_type_filter(query);
+        
+        // For type-partitioned MVs, check if the type matches
+        if is_type_partitioned {
+            if let Some(qtype) = &query_type {
+                // Extract type from MV name (format: mv_name_type_impression)
+                if let Some(mv_type) = mv.name.split("_type_").last() {
+                    if mv_type != qtype {
+                        return false; // Type doesn't match
+                    }
+                }
+            } else {
+                return false; // Query doesn't filter by type, can't use partitioned MV
+            }
+        }
+        
         // Check group_by is subset
         let q_group_by: HashSet<String> = query
             .get("group_by")
@@ -39,15 +65,25 @@ impl Planner {
             })
             .unwrap_or_default();
 
-        let mv_group_by: HashSet<String> = mv.group_by.iter().cloned().collect();
+        // For type-partitioned MVs, 'type' is not in group_by but is filtered
+        let mut mv_group_by: HashSet<String> = mv.group_by.iter().cloned().collect();
+        if is_type_partitioned {
+            // Add 'type' back for WHERE clause checking
+            mv_group_by.insert("type".to_string());
+        }
+        
         if !q_group_by.is_subset(&mv_group_by) {
             return false;
         }
 
-        // Check WHERE columns exist in MV
+        // Check WHERE columns exist in MV (excluding type for partitioned MVs)
         if let Some(where_arr) = query.get("where").and_then(|v| v.as_array()) {
             for pred in where_arr {
                 if let Some(col) = pred.get("col").and_then(|v| v.as_str()) {
+                    if col == "type" && is_type_partitioned {
+                        // Type is already filtered in partitioned MV, skip
+                        continue;
+                    }
                     if !mv_group_by.contains(col) {
                         return false;
                     }
@@ -227,6 +263,9 @@ impl Planner {
     }
 
     pub fn translate_query(&self, query: &Value, mvs: &mut [MaterializedView], verbose: bool) -> Result<String> {
+        // Check if query filters by type - if so, prefer type-partitioned MVs
+        let query_type = self.extract_type_filter(query);
+        
         let mut best_mv: Option<usize> = None;
         let mut best_cost = f64::INFINITY;
 
@@ -241,12 +280,40 @@ impl Planner {
                 }
 
                 let cost = self.mv_cost(query, mv);
+                
+                // Prefer type-partitioned MVs when query filters by type
+                // Type-partitioned MVs have format: mv_name_type_<type> (e.g., mv_advertiser_id_full_type_impression)
+                // Base MVs with type in name have format: mv_type_* (e.g., mv_type_week_day)
+                let is_type_partitioned_mv = mv.name.contains("_type_") && {
+                    let parts: Vec<&str> = mv.name.split("_type_").collect();
+                    if parts.len() == 2 {
+                        let type_part = parts[1];
+                        matches!(type_part, "click" | "impression" | "purchase" | "serve")
+                    } else {
+                        false
+                    }
+                };
+                
+                let adjusted_cost = if let Some(qtype) = &query_type {
+                    if is_type_partitioned_mv && mv.name.contains(&format!("_type_{}", qtype)) {
+                        // Type-partitioned MV matches query type - significant cost reduction
+                        cost * 0.1 // 90% cost reduction for exact type match
+                    } else if is_type_partitioned_mv {
+                        // Type-partitioned MV but wrong type - very high cost
+                        cost * 100.0
+                    } else {
+                        cost
+                    }
+                } else {
+                    cost
+                };
+                
                 if verbose {
-                    println!("Considering {}: cost {}", mv.name, cost);
+                    println!("Considering {}: cost {} (adjusted: {})", mv.name, cost, adjusted_cost);
                 }
 
-                if cost < best_cost {
-                    best_cost = cost;
+                if adjusted_cost < best_cost {
+                    best_cost = adjusted_cost;
                     best_mv = Some(i);
                 }
             }
@@ -265,11 +332,36 @@ impl Planner {
             Ok(self.assemble_sql_plain(query))
         }
     }
+    
+    fn extract_type_filter(&self, query: &Value) -> Option<String> {
+        if let Some(where_arr) = query.get("where").and_then(|v| v.as_array()) {
+            for pred in where_arr {
+                if let Some(col) = pred.get("col").and_then(|v| v.as_str()) {
+                    if col == "type" {
+                        if let Some(op) = pred.get("op").and_then(|v| v.as_str()) {
+                            if op == "eq" {
+                                return pred.get("val").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 
     fn assemble_sql_for_mv(&self, query: &Value, mv: &MaterializedView) -> String {
         let select_sql = self.select_over_mv(query.get("select"), mv);
         let from_tbl = mv.name.clone();
-        let where_clause = self.where_to_sql(query.get("where"));
+        
+        // For type-partitioned MVs, exclude type filter from WHERE clause
+        let is_type_partitioned = mv.name.contains("_type_");
+        let where_clause = if is_type_partitioned {
+            self.where_to_sql_excluding_type(query.get("where"))
+        } else {
+            self.where_to_sql(query.get("where"))
+        };
+        
         let group_by = self.group_by_to_sql(query.get("group_by"));
         let order_by = self.order_by_to_sql(query.get("order_by"));
 
@@ -287,6 +379,74 @@ impl Planner {
             sql.push_str(&format!(" LIMIT {}", limit));
         }
         sql
+    }
+    
+    fn where_to_sql_excluding_type(&self, where_clause: Option<&Value>) -> String {
+        let Some(conditions) = where_clause.and_then(|w| w.as_array()) else {
+            return String::new();
+        };
+
+        let parts: Vec<String> = conditions.iter()
+            .filter_map(|cond| {
+                // Skip type filters for partitioned MVs
+                if let Some(col) = cond.get("col").and_then(|v| v.as_str()) {
+                    if col == "type" {
+                        return None;
+                    }
+                }
+                Some(self.predicate_to_sql(cond))
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", parts.join(" AND "))
+        }
+    }
+    
+    fn predicate_to_sql(&self, cond: &Value) -> String {
+        let col = cond.get("col").and_then(|v| v.as_str()).unwrap_or("");
+        let op = cond.get("op").and_then(|v| v.as_str()).unwrap_or("");
+        let val = cond.get("val");
+
+        match op {
+            "eq" => {
+                if let Some(s) = val.and_then(|v| v.as_str()) {
+                    format!("{} = '{}'", col, s)
+                } else {
+                    format!("{} = {}", col, val.unwrap_or(&serde_json::Value::Null))
+                }
+            }
+            "neq" => {
+                if let Some(s) = val.and_then(|v| v.as_str()) {
+                    format!("{} != '{}'", col, s)
+                } else {
+                    format!("{} != {}", col, val.unwrap_or(&serde_json::Value::Null))
+                }
+            }
+            "between" => {
+                if let Some(arr) = val.and_then(|v| v.as_array()) {
+                    let low = arr[0].as_str().unwrap_or("");
+                    let high = arr[1].as_str().unwrap_or("");
+                    format!("{} BETWEEN '{}' AND '{}'", col, low, high)
+                } else {
+                    String::new()
+                }
+            }
+            "in" => {
+                if let Some(arr) = val.and_then(|v| v.as_array()) {
+                    let vals_str: Vec<String> = arr.iter()
+                        .map(|v| format!("'{}'", v.as_str().unwrap_or("")))
+                        .collect();
+                    format!("{} IN ({})", col, vals_str.join(", "))
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        }
     }
 
     fn assemble_sql_plain(&self, query: &Value) -> String {
