@@ -125,7 +125,7 @@ fn main() -> Result<()> {
         
         let file_con = Connection::open(&db_path)?;
         pb.set_message("Loading data...");
-        load_data(&file_con, &args.input_dir, true)?; // Use Parquet
+        load_data(&file_con, &args.input_dir)?;
         pb.inc(1);
         
         pb.set_message("Creating materialized views...");
