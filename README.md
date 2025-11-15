@@ -4,49 +4,63 @@ Jet's attempt at the CalHacks 2025 query planner challenge using DuckDB and Rust
 
 ## Performance
 
-### Benchmark Results: judges.json (100 runs)
+### Benchmark Results: judges.json (1000 runs)
 
-Benchmark results on the full dataset (245M rows) with `judges.json` queries (100 runs):
+Benchmark results on the full dataset (245M rows) with `judges.json` queries (1000 runs):
 
-| Query | Average | Min | Max |
-|-------|---------|-----|-----|
-| Q1  | 0.000s | 0.000s | 0.001s |
-| Q2  | 0.000s | 0.000s | 0.001s |
-| Q3  | 0.006s | 0.005s | 0.009s |
-| Q4  | 0.012s | 0.010s | 0.015s |
-| Q5  | 0.012s | 0.009s | 0.015s |
-| Q6  | 0.000s | 0.000s | 0.001s |
-| Q7  | 0.000s | 0.000s | 0.001s |
-| Q8  | 0.001s | 0.000s | 0.002s |
-| Q9  | 0.003s | 0.002s | 0.004s |
-| Q10 | 0.003s | 0.002s | 0.005s |
-| Q11 | 0.021s | 0.019s | 0.024s |
-| Q12 | 0.004s | 0.003s | 0.007s |
-| Q13 | 0.001s | 0.001s | 0.001s |
-| Q14 | 0.003s | 0.002s | 0.004s |
-| Q15 | 0.023s | 0.021s | 0.028s |
+```text
+Using existing database: duck4.db
+Query preparation and warmup completed in 2.0s
+Query execution completed in 21.7s
 
-**Performance:**
-
-- **Average total time per run**: 0.090s
-- **Sum of all minimum times**: 0.074s
-
-### Benchmark Results: queries.json (100 runs)
-
-Benchmark results on the full dataset with `queries.json` queries (100 runs):
-
-| Query | Average | Min | Max |
-|-------|---------|-----|-----|
-| Q1 | 0.000s | 0.000s | 0.001s |
-| Q2 | 0.040s | 0.036s | 0.049s |
-| Q3 | 0.004s | 0.003s | 0.007s |
-| Q4 | 0.006s | 0.004s | 0.008s |
-| Q5 | 0.012s | 0.010s | 0.017s |
+=== Query Performance Summary ===
+Query 1: 0.27ms average
+Query 2: 0.44ms average
+Query 3: 2.10ms average
+Query 4: 1.90ms average
+Query 5: 1.86ms average
+Query 6: 0.22ms average
+Query 7: 0.23ms average
+Query 8: 5.21ms average
+Query 9: 1.00ms average
+Query 10: 0.92ms average
+Query 11: 1.41ms average
+Query 12: 0.96ms average
+Query 13: 3.03ms average
+Query 14: 0.97ms average
+Query 15: 0.87ms average
+Sum of averages: 21.40ms
+```
 
 **Performance:**
 
-- **Average total time per run**: 0.062s
-- **Sum of all minimum times**: 0.053s
+- **Query preparation and warmup**: 2.0s
+- **Total execution time (1000 runs)**: 21.7s
+- **Sum of query averages**: 21.40ms
+
+### Benchmark Results: queries.json (1000 runs)
+
+Benchmark results on the full dataset with `queries.json` queries (1000 runs):
+
+```text
+Using existing database: duck4.db
+Query preparation and warmup completed in 1.3s
+Query execution completed in 6.5s
+
+=== Query Performance Summary ===
+Query 1: 0.77ms average
+Query 2: 0.90ms average
+Query 3: 0.96ms average
+Query 4: 1.96ms average
+Query 5: 1.74ms average
+Sum of averages: 6.31ms
+```
+
+**Performance:**
+
+- **Query preparation and warmup**: 1.3s
+- **Total execution time (1000 runs)**: 6.5s
+- **Sum of query averages**: 6.31ms
 
 ## Quick Start
 
@@ -68,25 +82,27 @@ cargo build --release
 
 ```bash
 # Uses cached database (much faster)
-./target/release/calhacks \
+# Specify the database file to use
+cargo run --release -- \
   --input-dir ../calhacks-applovin-query-planner-challenge/data/data \
+  --use-existing duck4.db \
   --run \
   --queries ../calhacks-applovin-query-planner-challenge/judges.json \
-  --output-dir results/benchmark-full-judges \
-  --use-existing
+  --output-dir results/benchmark-full-judges
 ```
 
 ### Benchmark with Multiple Runs
 
 ```bash
-# Run queries 100 times and get average timings
-./target/release/calhacks \
+# Run queries 1000 times and get average timings
+cargo run --release -- \
   --input-dir ../calhacks-applovin-query-planner-challenge/data/data \
+  --use-existing duck4.db \
   --run \
   --queries ../calhacks-applovin-query-planner-challenge/judges.json \
   --output-dir results/benchmark \
-  --use-existing \
-  --runs 100
+  --runs 1000 \
+  --profile
 ```
 
 ## Usage
@@ -100,7 +116,7 @@ cargo build --release
 | `--queries FILE` | JSON file with query definitions | `queries.json` |
 | `--run` | Execute queries (required flag) | - |
 | `--runs N` | Number of times to run each query (for averaging) | 1 |
-| `--use-existing` | Use existing database file if available | False |
+| `--use-existing FILE` | Use existing database file (specify path) | None |
 | `--baseline-dir DIR` | Compare results against baseline | None |
 | `--profile` | Enable EXPLAIN ANALYZE profiling | False |
 
