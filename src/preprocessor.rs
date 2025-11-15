@@ -1,33 +1,20 @@
 use duckdb::Connection;
 use anyhow::Result;
-use std::time::Instant;
 
 use crate::mv::{create_mv_registry, MaterializedView, create_type_partitioned_mvs};
 
 pub fn create_materialized_views(con: &Connection) -> Result<Vec<MaterializedView>> {
-    let total_start = Instant::now();
     let mvs = create_mv_registry();
     
-    println!("Creating {} materialized views...", mvs.len());
-    
     for mv in &mvs {
-        let start = Instant::now();
-        println!("Creating materialized view {} (takes ~10-60 seconds)", mv.name);
-        
         let sql = mv.generate_create_sql();
         con.execute(&sql, [])?;
-        
-        println!("🟩 {} created in {:.3}s", mv.name, start.elapsed().as_secs_f64());
     }
-    
-    println!("Materialized views creation complete: {:.3}s", total_start.elapsed().as_secs_f64());
     
     Ok(mvs)
 }
 
 pub fn create_type_partitioned_materialized_views(con: &Connection, base_mvs: &[MaterializedView]) -> Result<Vec<MaterializedView>> {
-    let total_start = Instant::now();
-    
     // First compute stats on base MVs to determine which ones to partition
     let mut mvs_with_stats = base_mvs.to_vec();
     compute_mv_stats(con, &mut mvs_with_stats)?;
@@ -35,18 +22,12 @@ pub fn create_type_partitioned_materialized_views(con: &Connection, base_mvs: &[
     let partitioned_mvs = create_type_partitioned_mvs(&mvs_with_stats);
     
     if partitioned_mvs.is_empty() {
-        println!("No MVs eligible for type partitioning");
         return Ok(Vec::new());
     }
     
-    println!("Creating {} type-partitioned materialized views...", partitioned_mvs.len());
-    
     for mv in &partitioned_mvs {
-        let start = Instant::now();
         // Extract type from name (format: mv_name_type_impression)
         let event_type = mv.name.split("_type_").last().unwrap_or("unknown");
-        
-        println!("Creating type-partitioned MV {} (takes ~5-30 seconds)", mv.name);
         
         // Create SQL that filters by type and groups by remaining columns
         // Note: We don't include 'type' in SELECT since it's constant (filtered in WHERE)
@@ -97,20 +78,13 @@ pub fn create_type_partitioned_materialized_views(con: &Connection, base_mvs: &[
         );
         
         con.execute(&sql, [])?;
-        
-        println!("🟩 {} created in {:.3}s", mv.name, start.elapsed().as_secs_f64());
     }
-    
-    println!("Type-partitioned materialized views creation complete: {:.3}s", total_start.elapsed().as_secs_f64());
     
     Ok(partitioned_mvs)
 }
 
 pub fn compute_mv_stats(con: &Connection, mvs: &mut [MaterializedView]) -> Result<()> {
     for mv in mvs.iter_mut() {
-        let start = Instant::now();
-        println!("Computing stats for {} (takes ~10-60 seconds)", mv.name);
-        
         // We need to compute stats, but Planner::compute_mv_stats needs mutable access
         // For now, we'll compute stats directly here
         let mut selects = vec!["COUNT(*)".to_string()];
@@ -147,123 +121,78 @@ pub fn compute_mv_stats(con: &Connection, mvs: &mut [MaterializedView]) -> Resul
             }
             mv.col_to_topk.insert(col.clone(), topk);
         }
-        
-        println!("🟩 {} stats computed in {:.3}s", mv.name, start.elapsed().as_secs_f64());
     }
     
     Ok(())
 }
 
 pub fn create_indexes(con: &Connection, mvs: &[MaterializedView]) -> Result<()> {
-    println!("Creating indexes on materialized views...");
-    
     for mv in mvs {
-        let start = Instant::now();
-        
         // Create composite indexes based on common query patterns
         // Pattern 1: (type, day) - very common in queries
         if mv.group_by.contains(&"type".to_string()) && mv.group_by.contains(&"day".to_string()) {
             let idx_name = format!("idx_{}_type_day", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(type, day);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
         
         // Pattern 2: Index on day for BETWEEN queries
         if mv.group_by.contains(&"day".to_string()) {
             let idx_name = format!("idx_{}_day", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(day);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
         
         // Pattern 3: Index on type (most common filter)
         if mv.group_by.contains(&"type".to_string()) {
             let idx_name = format!("idx_{}_type", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(type);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
         
         // Pattern 4: Index on country (common filter)
         if mv.group_by.contains(&"country".to_string()) {
             let idx_name = format!("idx_{}_country", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(country);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
         
         // Pattern 5: Composite (type, country) - common combo
         if mv.group_by.contains(&"type".to_string()) && mv.group_by.contains(&"country".to_string()) {
             let idx_name = format!("idx_{}_type_country", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(type, country);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
         
         // Pattern 6: Index on advertiser_id (for Q7, Q8, Q11)
         if mv.group_by.contains(&"advertiser_id".to_string()) {
             let idx_name = format!("idx_{}_advertiser_id", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(advertiser_id);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
         
         // Pattern 7: Index on publisher_id (for Q3, Q15)
         if mv.group_by.contains(&"publisher_id".to_string()) {
             let idx_name = format!("idx_{}_publisher_id", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(publisher_id);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
         
         // Pattern 8: Index on minute (for Q4, Q5 ORDER BY minute)
         if mv.group_by.contains(&"minute".to_string()) {
             let idx_name = format!("idx_{}_minute", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(minute);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
         
         // Pattern 9: Index on week (for Q12)
         if mv.group_by.contains(&"week".to_string()) {
             let idx_name = format!("idx_{}_week", mv.name);
             let sql = format!("CREATE INDEX IF NOT EXISTS {} ON {}(week);", idx_name, mv.name);
-            if let Err(e) = con.execute(&sql, []) {
-                eprintln!("Warning: Could not create index {}: {}", idx_name, e);
-            } else {
-                println!("  Created index {}", idx_name);
-            }
+            let _ = con.execute(&sql, []);
         }
-        
-        println!("🟩 Indexes created for {} in {:.3}s", mv.name, start.elapsed().as_secs_f64());
     }
     
-    println!("Index creation complete");
     Ok(())
 }
 
@@ -287,8 +216,6 @@ pub fn load_all_mvs_from_db(con: &Connection) -> Result<Vec<MaterializedView>> {
     if mv_names.is_empty() {
         return Ok(Vec::new());
     }
-    
-    println!("Found {} materialized views in database", mv_names.len());
     
     // Reconstruct MV metadata from database schema
     let mut mvs = Vec::new();
@@ -373,16 +300,9 @@ pub fn load_all_mvs_from_db(con: &Connection) -> Result<Vec<MaterializedView>> {
 }
 
 pub fn warmup_cache(con: &Connection, mvs: &[MaterializedView]) -> Result<()> {
-    println!("Warming up cache...");
-    
     for mv in mvs {
-        let start = Instant::now();
-        println!("Analyzing {} (takes ~10-60 seconds)", mv.name);
-        
         con.execute(&format!("ANALYZE {};", mv.name), [])?;
         con.execute(&format!("SELECT COUNT(*) FROM {}", mv.name), [])?;
-        
-        println!("🟩 {} analyzed in {:.3}s", mv.name, start.elapsed().as_secs_f64());
     }
     
     Ok(())

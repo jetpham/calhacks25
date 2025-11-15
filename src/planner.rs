@@ -262,7 +262,7 @@ impl Planner {
         base_cost * mv_size_factor
     }
 
-    pub fn translate_query(&self, query: &Value, mvs: &mut [MaterializedView], verbose: bool) -> Result<String> {
+    pub fn translate_query(&self, query: &Value, mvs: &mut [MaterializedView], _verbose: bool) -> Result<String> {
         // Check if query filters by type - if so, prefer type-partitioned MVs
         let query_type = self.extract_type_filter(query);
         
@@ -273,9 +273,6 @@ impl Planner {
             if self.is_mv_usable(query, mv) {
                 if !mv.has_stats() {
                     // Compute stats on the fly (should be precomputed, but handle it)
-                    if verbose {
-                        println!("Computing missing stats for {}", mv.name);
-                    }
                     // Note: We'd need mutable access, but for now assume stats are precomputed
                 }
 
@@ -307,10 +304,6 @@ impl Planner {
                 } else {
                     cost
                 };
-                
-                if verbose {
-                    println!("Considering {}: cost {} (adjusted: {})", mv.name, cost, adjusted_cost);
-                }
 
                 if adjusted_cost < best_cost {
                     best_cost = adjusted_cost;
@@ -321,14 +314,8 @@ impl Planner {
 
         if let Some(idx) = best_mv {
             let mv = &mvs[idx];
-            if verbose {
-                println!("Picking MV {} for query", mv.name);
-            }
             Ok(self.assemble_sql_for_mv(query, mv))
         } else {
-            if verbose {
-                println!("Warning: could not find a feasible MV for the query. Using events table.");
-            }
             Ok(self.assemble_sql_plain(query))
         }
     }

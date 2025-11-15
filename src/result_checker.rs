@@ -3,44 +3,29 @@ use std::path::{Path, PathBuf};
 use std::fs;
 
 pub fn compare_results(baseline_dir: &Path, output_dir: &Path) -> Result<()> {
-    println!("Comparing results in {:?} with {:?}", baseline_dir, output_dir);
-    
     let baseline_files = get_query_files(baseline_dir)?;
-    let mut total_queries = 0;
-    let mut passed = 0;
     let mut failed = Vec::new();
     
     for (qnum, baseline_file) in baseline_files.iter().enumerate() {
-        total_queries += 1;
         let query_num = qnum + 1;
         
         let output_file = output_dir.join(format!("q{}.csv", query_num));
         
         if !output_file.exists() {
-            println!("Query {}: MISSING - No output file found", query_num);
             failed.push((query_num, "Missing output file".to_string()));
             continue;
         }
         
         match compare_csv_files(baseline_file, &output_file) {
             Ok(()) => {
-                println!("Query {}: PASSED", query_num);
-                passed += 1;
             }
             Err(e) => {
-                println!("Query {}: FAILED - {}", query_num, e);
                 failed.push((query_num, e.to_string()));
             }
         }
     }
     
-    println!("\nSummary: {}/{} queries passed", passed, total_queries);
-    
     if !failed.is_empty() {
-        println!("\nFailed queries:");
-        for (qnum, reason) in failed {
-            println!("  Query {}: {}", qnum, reason);
-        }
         anyhow::bail!("Some queries failed comparison")
     }
     

@@ -3,12 +3,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 pub fn load_data(con: &Connection, data_dir: &PathBuf, use_parquet: bool) -> Result<Option<PathBuf>> {
-    println!("Creating events view from source data...");
-    
     let csv_pattern = format!("{}/events_part_*.csv", data_dir.to_string_lossy());
     
     // Create the events view from CSV
-    println!("Creating events view from CSV files...");
     con.execute(
         &format!(
             r#"
@@ -82,9 +79,6 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, use_parquet: bool) -> Res
             parquet_dir.to_string_lossy().to_string()
         } else {
             // Doesn't exist - generate it
-            println!("Generating Parquet files with optimized row groups (takes ~60 seconds)...");
-            let start = std::time::Instant::now();
-            
             // Use hardware-aware Parquet generation
             // Get optimal row group size based on hardware
             use crate::hardware::get_hardware_info;
@@ -95,11 +89,6 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, use_parquet: bool) -> Res
             // Winner used 1M for 10 threads, we'll adjust for our thread count
             let estimated_rows = 245_000_000; // Full dataset estimate
             let optimal_row_group_size = hw.optimal_row_group_size(estimated_rows);
-            
-            println!("Hardware detected: {} threads, {:.1}GB RAM available", 
-                     hw.num_threads, hw.available_memory_gb);
-            println!("Using ROW_GROUP_SIZE: {} (optimized for {} threads)", 
-                     optimal_row_group_size, hw.num_threads);
             
             // Create directory if it doesn't exist
             std::fs::create_dir_all(&parquet_dir)?;
@@ -114,7 +103,6 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, use_parquet: bool) -> Res
                 [],
             )?;
             
-            println!("Parquet generation complete: {:.3}s", start.elapsed().as_secs_f64());
             parquet_file.to_string_lossy().to_string()
         };
 
@@ -131,8 +119,6 @@ pub fn load_data(con: &Connection, data_dir: &PathBuf, use_parquet: bool) -> Res
     } else {
         None
     };
-    
-    println!("Data loading complete");
     
     Ok(parquet_path)
 }

@@ -3,6 +3,18 @@ use clap::Parser;
 use std::path::{PathBuf, Path};
 use std::time::{Instant, Duration};
 use duckdb::Connection;
+use indicatif::{ProgressBar, ProgressStyle};
+
+fn format_duration_seconds(duration: Duration) -> String {
+    let total_secs = duration.as_secs_f64();
+    format!("{:.1}s", total_secs)
+}
+
+fn format_duration_ms_ns(duration: Duration) -> String {
+    let total_ns = duration.as_nanos();
+    let total_ms = total_ns as f64 / 1_000_000.0;
+    format!("{:.2}ms", total_ms)
+}
 
 mod data_loader;
 mod preprocessor;
@@ -40,8 +52,8 @@ struct Args {
     )]
     queries: PathBuf,
 
-    #[arg(long)]
-    use_existing: bool,
+    #[arg(long, value_name = "FILE")]
+    use_existing: Option<PathBuf>,
 
     #[arg(long, value_name = "DIR")]
     baseline_dir: Option<PathBuf>,
@@ -72,31 +84,7 @@ fn find_next_db_filename() -> Result<PathBuf> {
     Ok(PathBuf::from(format!("duck{}.db", max_num + 1)))
 }
 
-fn find_latest_db_filename() -> Result<PathBuf> {
-    // Check for old database location first (backward compatibility)
-    let old_db = PathBuf::from("tmp/concurrent.duckdb");
-    if old_db.exists() {
-        return Ok(old_db);
-    }
-    
-    // Find the highest existing number
-    let mut max_num = 0;
-    for i in 1..=100 {
-        let path = format!("duck{}.db", i);
-        if Path::new(&path).exists() {
-            max_num = i;
-        }
-    }
-    
-    if max_num == 0 {
-        return Ok(PathBuf::from("duck1.db"));
-    }
-    
-    Ok(PathBuf::from(format!("duck{}.db", max_num)))
-}
-
 fn main() -> Result<()> {
-    let total_start = Instant::now();
     let args = Args::parse();
 
     if let Some(baseline_dir) = &args.baseline_dir {
@@ -108,52 +96,67 @@ fn main() -> Result<()> {
         }
     }
 
-    let db_path = if args.use_existing {
-        find_latest_db_filename()?
+    let db_path = if let Some(existing_path) = &args.use_existing {
+        existing_path.clone()
     } else {
         find_next_db_filename()?
     };
     
-    println!("Using persistent database: {}", db_path.display());
-    
-    if db_path.exists() && args.use_existing {
-        println!("Using existing database...");
+    // Part 1: Print DB file status
+    if db_path.exists() && args.use_existing.is_some() {
+        println!("Using existing database: {}", db_path.display());
     } else {
-        println!("Creating database from CSV files...");
+        println!("Creating new database: {}", db_path.display());
+        
+        let preprocess_start = Instant::now();
+        
+        // Part 2: Preprocessing progress bar
+        let pb = ProgressBar::new(6);
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("#>-")
+        );
+        pb.set_message("Preprocessing database");
         
         if db_path.exists() {
             std::fs::remove_file(&db_path)?;
         }
         
         let file_con = Connection::open(&db_path)?;
+        pb.set_message("Loading data...");
         load_data(&file_con, &args.input_dir, true)?; // Use Parquet
+        pb.inc(1);
         
-        println!("Creating materialized views...");
+        pb.set_message("Creating materialized views...");
         let mut mvs = create_materialized_views(&file_con)?;
+        pb.inc(1);
         
-        println!("Computing statistics for materialized views...");
+        pb.set_message("Computing MV statistics...");
         compute_mv_stats(&file_con, &mut mvs)?;
+        pb.inc(1);
         
-        println!("Creating type-partitioned materialized views...");
+        pb.set_message("Creating type-partitioned MVs...");
         let mut partitioned_mvs = create_type_partitioned_materialized_views(&file_con, &mvs)?;
+        pb.inc(1);
         
         let partitioned_count = partitioned_mvs.len();
         
         // Combine base and partitioned MVs
         mvs.append(&mut partitioned_mvs);
         
-        println!("Computing statistics for type-partitioned MVs...");
+        pb.set_message("Computing partitioned MV statistics...");
         let total_mvs = mvs.len();
         compute_mv_stats(&file_con, &mut mvs[total_mvs - partitioned_count..])?;
+        pb.inc(1);
         
-        println!("Creating indexes on materialized views...");
+        pb.set_message("Creating indexes...");
         create_indexes(&file_con, &mvs)?;
+        pb.inc(1);
         
-        println!("Warming up cache...");
-        warmup_cache(&file_con, &mvs)?;
-        
-        println!("Database saved to {}", db_path.display());
-        println!("Database setup complete");
+        pb.finish_and_clear();
+        let preprocess_duration = preprocess_start.elapsed();
+        println!("Database preprocessing completed in {}", format_duration_seconds(preprocess_duration));
     }
     
     let con = Connection::open(&db_path)?;
@@ -163,25 +166,37 @@ fn main() -> Result<()> {
             anyhow::bail!("--output-dir required with --run");
         };
         
-        let queries = parse_queries_from_file(&args.queries)?;
-        println!("Parsed {} queries", queries.len());
+        // Part 3: Query prep progress bar
+        let prep_start = Instant::now();
+        let prep_pb = ProgressBar::new(4);
+        prep_pb.set_style(
+            ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("#>-")
+        );
+        prep_pb.set_message("Preparing queries");
         
+        prep_pb.set_message("Parsing queries...");
+        let queries = parse_queries_from_file(&args.queries)?;
+        prep_pb.inc(1);
+        
+        prep_pb.set_message("Loading materialized views...");
         // Load all MVs from database (base + type-partitioned)
-        println!("Loading materialized views from database...");
         let mut mvs = load_all_mvs_from_db(&con)?;
         
         if mvs.is_empty() {
             // Fallback: create base MVs if none exist
-            println!("No MVs found, creating base MVs...");
             mvs = create_materialized_views(&con)?;
         }
+        prep_pb.inc(1);
         
-        println!("Computing statistics for {} MVs...", mvs.len());
+        prep_pb.set_message("Computing statistics...");
         compute_mv_stats(&con, &mut mvs)?;
+        prep_pb.inc(1);
         
+        prep_pb.set_message("Planning and preparing queries...");
         let planner = Planner::new(&con);
         
-        println!("Planning and converting {} queries to SQL...", queries.len());
         let sql_queries: Vec<String> = queries.iter()
             .map(|q| planner.translate_query(q, &mut mvs, false).unwrap_or_else(|_| {
                 // Fallback to plain SQL if planner fails
@@ -189,34 +204,40 @@ fn main() -> Result<()> {
             }))
             .collect();
         
-        println!("Preparing all statements...");
         let mut prepared_statements: Vec<_> = sql_queries
             .iter()
             .map(|sql| prepare_query(&con, sql))
             .collect::<Result<Vec<_>, _>>()?;
         
         if args.profile {
-            println!("\n=== Running EXPLAIN ANALYZE on all queries ===");
             for (i, sql) in sql_queries.iter().enumerate() {
-                println!("\n=== Query {} EXPLAIN ANALYZE ===", i + 1);
                 explain_query(&con, sql, i + 1)?;
-                println!();
             }
         }
         
-        println!("Executing {} queries {} time(s) each...", prepared_statements.len(), args.runs);
+        prep_pb.set_message("Warming up database...");
+        warmup_cache(&con, &mvs)?;
+        prep_pb.inc(1);
+        
+        prep_pb.finish_and_clear();
+        let prep_duration = prep_start.elapsed();
+        println!("Query preparation and warmup completed in {}", format_duration_seconds(prep_duration));
+        
+        // Part 4: Query execution progress bar
+        let exec_start = Instant::now();
+        let exec_pb = ProgressBar::new(args.runs as u64);
+        exec_pb.set_style(
+            ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Running queries...")
+                .unwrap()
+                .progress_chars("#>-")
+        );
+        
         let mut total_duration = Duration::ZERO;
         
         let num_queries = prepared_statements.len();
         let mut query_times = vec![Vec::new(); num_queries];
         
         for run in 1..=args.runs {
-            if args.runs > 1 {
-                println!("\n--- Run {}/{} ---", run, args.runs);
-            }
-            
-            let run_total = Instant::now();
-            
             con.execute("BEGIN TRANSACTION", [])?;
             
             for (i, stmt) in prepared_statements.iter_mut().enumerate() {
@@ -226,8 +247,6 @@ fn main() -> Result<()> {
                 
                 query_times[i].push(duration.as_secs_f64());
                 
-                println!("Query {} completed: {:.3}s", i + 1, duration.as_secs_f64());
-                
                 total_duration += duration;
                 
                 if run == 1 {
@@ -236,39 +255,30 @@ fn main() -> Result<()> {
             }
             
             con.execute("COMMIT", [])?;
-            
-            if args.runs > 1 {
-                println!("Run {} total time: {:.3}s", run, run_total.elapsed().as_secs_f64());
-            }
+            exec_pb.inc(1);
         }
         
-        if args.runs > 1 {
-            println!("\n=== Average Query Times (over {} runs) ===", args.runs);
-            let mut total_avg = 0.0;
-            for (i, times) in query_times.iter().enumerate() {
-                let avg = times.iter().sum::<f64>() / times.len() as f64;
-                total_avg += avg;
-                println!("Query {}: {:.3}s (min: {:.3}s, max: {:.3}s)", 
-                    i + 1, 
-                    avg,
-                    times.iter().fold(f64::INFINITY, |a, &b| a.min(b)),
-                    times.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))
-                );
-            }
-            println!("Average total time: {:.3}s", total_avg);
-        }
+        exec_pb.finish_and_clear();
+        let exec_duration = exec_start.elapsed();
+        println!("Query execution completed in {}", format_duration_seconds(exec_duration));
         
-        println!("\nTotal query time: {:.3}s", total_duration.as_secs_f64());
-        println!("Results written to {:?}", output_dir);
+        // Part 5: Summary
+        println!("\n=== Query Performance Summary ===");
+        let mut sum_of_averages_ns = 0u64;
+        for (i, times) in query_times.iter().enumerate() {
+            // Convert f64 seconds to nanoseconds for averaging
+            let avg_ns = (times.iter().sum::<f64>() / times.len() as f64 * 1_000_000_000.0) as u64;
+            sum_of_averages_ns = sum_of_averages_ns.saturating_add(avg_ns);
+            let avg_duration = Duration::from_nanos(avg_ns);
+            println!("Query {}: {} average", i + 1, format_duration_ms_ns(avg_duration));
+        }
+        let sum_avg_duration = Duration::from_nanos(sum_of_averages_ns);
+        println!("Sum of averages: {}", format_duration_ms_ns(sum_avg_duration));
 
         if let Some(baseline_dir) = &args.baseline_dir {
-            println!("\nComparing results...");
             compare_results(baseline_dir, output_dir)?;
         }
     }
-
-    let total_time = total_start.elapsed();
-    println!("Total runtime: {:.3}s", total_time.as_secs_f64());
 
     Ok(())
 }

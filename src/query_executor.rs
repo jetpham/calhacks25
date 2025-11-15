@@ -78,9 +78,7 @@ pub fn explain_query(con: &Connection, sql: &str, query_num: usize) -> Result<()
             
             let _ = std::fs::remove_file(&temp_file);
         }
-        Err(e) => {
-            eprintln!("Could not read profile file: {}", e);
-            println!("Could not read profile file: {}", e);
+        Err(_e) => {
         }
     }
     
